@@ -4,18 +4,33 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <meta name="theme-color" content="#f6f3ee">
+  <meta name="theme-color" content="#fff4f7">
   <title>Wedding Expense Manager</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect fill='%231c2430' width='32' height='32' rx='6'/%3E%3Cpath d='M8 22 V10 h3.2 l4.8 8.2 L20.8 10 H24 v12 h-2.6 v-7.6 L17.2 22 h-2.4 l-4.2-7.6 V22z' fill='%23c4a46a'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect fill='%23b84d6d' width='32' height='32' rx='8'/%3E%3Cpath d='M16 7c2.8 3.2 7 6.4 7 11a7 7 0 1 1-14 0c0-4.6 4.2-7.8 7-11z' fill='%23fff4f7'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <div class="petal-field" aria-hidden="true">
+    <span class="petal"></span>
+    <span class="petal"></span>
+    <span class="petal"></span>
+    <span class="petal"></span>
+    <span class="petal"></span>
+    <span class="petal"></span>
+    <span class="petal"></span>
+    <span class="petal"></span>
+  </div>
+
   <div class="app" id="app">
     <header class="header">
       <div class="header-top">
         <div class="brand">
+          <div class="brand-mark">🌸 Groom Side Celebration</div>
           <h1>Wedding Expense Manager</h1>
-          <p class="subtitle">Groom Side • 2026 <span id="sync-status" class="sync-status">Sheet sync not configured</span></p>
+          <p class="subtitle">Live from Google Sheets <span id="sync-status" class="sync-status">Loading…</span></p>
         </div>
         <div class="settings">
           <button type="button" class="icon-btn" id="settings-btn" aria-label="Settings" aria-haspopup="menu" aria-expanded="false" aria-controls="settings-menu">
@@ -26,57 +41,42 @@
             </svg>
           </button>
           <div id="settings-menu" class="menu" role="menu" hidden>
-            <button type="button" role="menuitem" data-action="export">Export Data</button>
-            <button type="button" role="menuitem" data-action="import">Import Data</button>
-            <button type="button" role="menuitem" data-action="configure-sync">Configure Sheet Sync</button>
-            <button type="button" role="menuitem" data-action="sync">Sync Now</button>
-            <button type="button" role="menuitem" class="danger" data-action="clear">Clear All Data</button>
+            <button type="button" role="menuitem" data-action="export">📤 Export Data</button>
+            <button type="button" role="menuitem" data-action="import">📥 Import Data</button>
+            <button type="button" role="menuitem" data-action="configure-sync">🔗 Sheet API URL</button>
+            <button type="button" role="menuitem" data-action="sync">🔄 Refresh from Sheet</button>
+            <button type="button" role="menuitem" class="danger" data-action="clear">🗑️ Clear All Data</button>
           </div>
           <input type="file" id="import-file" accept="application/json,.json" hidden>
         </div>
       </div>
       <nav class="tabs" role="tablist" aria-label="Sections">
-        <button type="button" class="tab is-active" role="tab" id="tab-dashboard" data-tab="dashboard" aria-selected="true" aria-controls="panel-dashboard">Dashboard</button>
-        <button type="button" class="tab" role="tab" id="tab-budget" data-tab="budget" aria-selected="false" aria-controls="panel-budget">Budget</button>
-        <button type="button" class="tab" role="tab" id="tab-payments" data-tab="payments" aria-selected="false" aria-controls="panel-payments">Payments</button>
-        <button type="button" class="tab" role="tab" id="tab-guests" data-tab="guests" aria-selected="false" aria-controls="panel-guests">Guests</button>
+        <button type="button" class="tab is-active" role="tab" id="tab-dashboard" data-tab="dashboard" aria-selected="true" aria-controls="panel-dashboard">💍 Dashboard</button>
+        <button type="button" class="tab" role="tab" id="tab-budget" data-tab="budget" aria-selected="false" aria-controls="panel-budget">🧾 Budget</button>
+        <button type="button" class="tab" role="tab" id="tab-payments" data-tab="payments" aria-selected="false" aria-controls="panel-payments">💸 Payments</button>
+        <button type="button" class="tab" role="tab" id="tab-guests" data-tab="guests" aria-selected="false" aria-controls="panel-guests">🥂 Guests</button>
       </nav>
     </header>
+
+    <div id="page-loader" class="page-loader" aria-hidden="true">
+      <div class="skeleton"></div>
+      <div class="skeleton"></div>
+      <div class="skeleton"></div>
+    </div>
 
     <main class="main">
       <section id="panel-dashboard" class="panel" data-panel="dashboard" role="tabpanel" aria-labelledby="tab-dashboard">
         <div class="panel-head">
           <div>
-            <h2>Overview</h2>
-            <p class="hint" id="dashboard-meta">Live data from Google Sheets</p>
+            <h2>Overview ✨</h2>
+            <p class="hint" id="dashboard-meta">Everything here comes from Google Sheets</p>
           </div>
-          <button type="button" class="btn btn-ghost" data-action="sync" title="Refresh shared sheet data">↻ Sync</button>
+          <button type="button" class="btn btn-ghost" data-action="sync" title="Pull latest data from Google Sheets">🔄 Refresh</button>
         </div>
 
         <section class="block details-block" aria-labelledby="wedding-details-title">
-          <h3 id="wedding-details-title">Wedding Details</h3>
-          <dl class="details">
-            <div>
-              <dt>Engagement</dt>
-              <dd>21 Oct 2026</dd>
-            </div>
-            <div>
-              <dt>Wedding</dt>
-              <dd>25 Nov 2026</dd>
-            </div>
-            <div>
-              <dt>Other Functions</dt>
-              <dd>22, 23 &amp; 24 Nov 2026</dd>
-            </div>
-            <div>
-              <dt>Expected Guests</dt>
-              <dd>250–300</dd>
-            </div>
-            <div>
-              <dt>Side</dt>
-              <dd>Groom</dd>
-            </div>
-          </dl>
+          <h3 id="wedding-details-title">Wedding Details 💐</h3>
+          <dl class="details" id="wedding-details"></dl>
         </section>
 
         <div id="stat-grid" class="stats"></div>
@@ -85,23 +85,23 @@
 
         <div class="summary-grid">
           <section class="block" aria-labelledby="function-summary-title">
-            <h3 id="function-summary-title">Function Summary</h3>
+            <h3 id="function-summary-title">Function Summary 🎊</h3>
             <div id="function-summary"></div>
           </section>
           <section class="block" aria-labelledby="category-summary-title">
-            <h3 id="category-summary-title">Category Summary</h3>
+            <h3 id="category-summary-title">Category Summary 🧺</h3>
             <div id="category-summary"></div>
           </section>
         </div>
 
         <div class="summary-grid">
           <section class="block" aria-labelledby="guest-summary-title">
-            <h3 id="guest-summary-title">Guest Summary</h3>
+            <h3 id="guest-summary-title">Guest Summary 👥</h3>
             <div id="guest-summary"></div>
           </section>
           <section class="block" aria-labelledby="pending-title">
             <div class="block-head">
-              <h3 id="pending-title">Pending Payments</h3>
+              <h3 id="pending-title">Pending Payments ⏳</h3>
               <button type="button" class="text-btn" id="view-pending" hidden>View all</button>
             </div>
             <div id="pending-list"></div>
@@ -112,10 +112,10 @@
       <section id="panel-budget" class="panel" data-panel="budget" role="tabpanel" aria-labelledby="tab-budget" hidden>
         <div class="panel-head">
           <div>
-            <h2>Budget &amp; Bookings</h2>
-            <p class="hint">Remaining = booking value − (advance + later payments). Track vendor, phone, and remarks with each booking.</p>
+            <h2>Budget &amp; Bookings 🧾</h2>
+            <p class="hint">Remaining = booking value − (advance + later payments). All rows live in Google Sheets.</p>
           </div>
-          <button type="button" class="btn btn-primary" data-action="add-expense">Add Expense</button>
+          <button type="button" class="btn btn-primary" data-action="add-expense">➕ Add Expense</button>
         </div>
 
         <div class="toolbar">
@@ -170,10 +170,10 @@
       <section id="panel-payments" class="panel" data-panel="payments" role="tabpanel" aria-labelledby="tab-payments" hidden>
         <div class="panel-head">
           <div>
-            <h2>Payments</h2>
-            <p class="hint">Each payment is its own record. Advances saved on an expense are already included in totals — do not enter them again here.</p>
+            <h2>Payments 💸</h2>
+            <p class="hint">Each payment is its own sheet row. Advances on expenses are already included in totals.</p>
           </div>
-          <button type="button" class="btn btn-primary" data-action="add-payment">Add Payment</button>
+          <button type="button" class="btn btn-primary" data-action="add-payment">➕ Add Payment</button>
         </div>
 
         <div class="toolbar">
@@ -218,10 +218,10 @@
       <section id="panel-guests" class="panel" data-panel="guests" role="tabpanel" aria-labelledby="tab-guests" hidden>
         <div class="panel-head">
           <div>
-            <h2>Guests</h2>
-            <p class="hint">Track invitees with phone numbers, function type, side, RSVP, and stay or travel needs. No budget fields here.</p>
+            <h2>Guests 🥂</h2>
+            <p class="hint">Invite list with phone, function type, RSVP, stay and travel. Sourced from the Guests sheet.</p>
           </div>
-          <button type="button" class="btn btn-primary" data-action="add-guest">Add Guest</button>
+          <button type="button" class="btn btn-primary" data-action="add-guest">➕ Add Guest</button>
         </div>
 
         <div class="toolbar toolbar-guests">
@@ -346,7 +346,7 @@
               </span>
             </label>
           </div>
-          <p class="hint">Remaining updates automatically. Advance is included in total paid — record later payments in the Payments tab.</p>
+          <p class="hint">Remaining updates automatically. Advance is included in total paid. Record later payments in the Payments tab.</p>
           <label class="field">
             <span>Remark</span>
             <textarea id="expense-notes" name="notes" rows="3" placeholder="Package details, delivery date, inclusions, pending work…"></textarea>

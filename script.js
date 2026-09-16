@@ -1,13 +1,12 @@
-/* Wedding Expense Manager — local cache with Google Sheets sync. */
+/* Wedding Expense Manager — Google Sheets is the only database. */
 
-const SYNC_API_URL = "https://script.google.com/macros/s/AKfycbwb-d5r9XQRI1MKgWUQzqnjO10htm_ka0_9ASGb2MyzqBSxgDfmibW3lK7SL5-wJdk/exec";
-
-const KEYS = {
-  expenses: "wedding_expenses",
-  payments: "wedding_payments",
-  guests: "wedding_guests",
-  settings: "wedding_settings"
-};
+const SYNC_API_URL = "https://script.google.com/macros/s/AKfycbzEddB__zWlXX6DlKtOAgg0utHvxzFKNmYNVk4iuUamHDR8gtTm4TTfANgVsQgpK3106g/exec";
+const LEGACY_LOCAL_KEYS = [
+  "wedding_expenses",
+  "wedding_payments",
+  "wedding_guests",
+  "wedding_settings"
+];
 
 const CATEGORIES = [
   "Venue",
@@ -72,60 +71,70 @@ const state = {
   tab: "dashboard",
   loadError: "",
   syncError: "",
-  syncing: false,
-  syncQueued: false,
-  syncDirty: false
+  apiUrl: SYNC_API_URL,
+  busy: false,
+  pullQueued: false,
+  saveQueued: false,
+  pendingWrite: false,
+  ready: false
 };
 
 const confirmState = { resolve: null };
+let saveChain = Promise.resolve();
 
-/* Storage */
+/* Sheets database — no LocalStorage */
 
-function loadData() {
-  const rawExpenses = localStorage.getItem(KEYS.expenses);
-  if (rawExpenses === null) {
-    state.expenses = buildSeedExpenses();
-    state.payments = [];
-    state.guests = [];
-    state.settings = { initialized: true };
-    saveData();
-    return;
-  }
-
-  try {
-    const expenses = JSON.parse(rawExpenses);
-    const payments = JSON.parse(localStorage.getItem(KEYS.payments) || "[]");
-    const guests = JSON.parse(localStorage.getItem(KEYS.guests) || "[]");
-    const settings = JSON.parse(localStorage.getItem(KEYS.settings) || "{}");
-    if (!Array.isArray(expenses) || !Array.isArray(payments)) throw new Error("Invalid saved data");
-    state.expenses = expenses.map(sanitizeExpense).filter(Boolean);
-    state.payments = payments.map(sanitizePayment).filter(Boolean);
-    state.guests = Array.isArray(guests) ? guests.map(sanitizeGuest).filter(Boolean) : [];
-    state.settings = settings && typeof settings === "object" ? settings : { initialized: true };
-  } catch (err) {
-    state.expenses = [];
-    state.payments = [];
-    state.guests = [];
-    state.settings = { initialized: true };
-    state.loadError = "Saved data could not be read. Nothing was overwritten.";
-  }
-}
-
-function saveData() {
-  try {
-    localStorage.setItem(KEYS.expenses, JSON.stringify(state.expenses));
-    localStorage.setItem(KEYS.payments, JSON.stringify(state.payments));
-    localStorage.setItem(KEYS.guests, JSON.stringify(state.guests));
-    localStorage.setItem(KEYS.settings, JSON.stringify(state.settings));
-  } catch (err) {
-    showToast("Could not save. Browser storage may be full.");
-  }
-  state.syncDirty = true;
-  syncToSheet();
+function purgeLegacyLocalStorage() {
+  LEGACY_LOCAL_KEYS.forEach((key) => {
+    try {
+      localStorage.removeItem(key);
+    } catch (ignored) {}
+  });
 }
 
 function getSyncUrl() {
-  return String(state.settings.syncApiUrl || SYNC_API_URL || "").trim();
+  return String(state.apiUrl || SYNC_API_URL || "").trim();
+}
+
+function setLoader(visible) {
+  const loader = document.getElementById("page-loader");
+  if (loader) loader.hidden = !visible;
+}
+
+function settingValue(key, fallback) {
+  const value = state.settings && state.settings[key];
+  const text = value == null ? "" : String(value).trim();
+  if (!text) return fallback;
+  return formatSettingDisplay(text);
+}
+
+function formatSettingDisplay(value) {
+  if (/^\d{4}-\d{2}-\d{2}T/.test(value)) {
+    const date = new Date(value);
+    if (!Number.isNaN(date.getTime())) {
+      return date.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+    }
+  }
+  return value;
+}
+
+function renderWeddingDetails() {
+  const target = document.getElementById("wedding-details");
+  if (!target) return;
+  const rows = [
+    ["💍 Engagement", settingValue("engagementDate", "Add in Settings sheet")],
+    ["💒 Wedding", settingValue("weddingDate", "Add in Settings sheet")],
+    ["🎉 Other Functions", settingValue("otherFunctions", "Add in Settings sheet")],
+    ["👥 Expected Guests", settingValue("expectedGuests", "Add in Settings sheet")],
+    ["🤵 Side", settingValue("side", "Groom")],
+    ["🌸 Couple", settingValue("coupleNames", "Add in Settings sheet")]
+  ];
+  target.innerHTML = rows.map(([label, value]) => `
+    <div>
+      <dt>${escapeHtml(label)}</dt>
+      <dd>${escapeHtml(value)}</dd>
+    </div>
+  `).join("");
 }
 
 function setSyncStatus(message, isError) {
@@ -142,90 +151,120 @@ function applyRemoteData(data) {
   state.expenses = data.expenses.map(sanitizeExpense).filter(Boolean);
   state.payments = data.payments.map(sanitizePayment).filter(Boolean);
   state.guests = Array.isArray(data.guests) ? data.guests.map(sanitizeGuest).filter(Boolean) : [];
-  const currentSyncApiUrl = state.settings.syncApiUrl || SYNC_API_URL;
   state.settings = {
     initialized: true,
     ...(data.settings && typeof data.settings === "object" ? data.settings : {})
   };
-  if (currentSyncApiUrl) state.settings.syncApiUrl = currentSyncApiUrl;
-  localStorage.setItem(KEYS.expenses, JSON.stringify(state.expenses));
-  localStorage.setItem(KEYS.payments, JSON.stringify(state.payments));
-  localStorage.setItem(KEYS.guests, JSON.stringify(state.guests));
-  localStorage.setItem(KEYS.settings, JSON.stringify(state.settings));
-}
-
-async function syncFromSheet() {
-  const url = getSyncUrl();
-  if (!url) {
-    setSyncStatus("Sheet sync not configured", true);
-    return false;
-  }
-  if (state.syncing) {
-    state.syncQueued = true;
-    return false;
-  }
-  state.syncing = true;
-  setSyncStatus("Syncing…", false);
-  try {
-    const remote = await jsonpRequest(url);
-    const hasRemoteData = remote.expenses.length || remote.payments.length || remote.guests.length;
-    const hasLocalData = state.expenses.length || state.payments.length || state.guests.length;
-    if (state.syncDirty || (!hasRemoteData && hasLocalData)) {
-      await pushDataToSheet(url);
-      state.syncDirty = false;
-    } else if (hasRemoteData || !hasLocalData) {
-      applyRemoteData(remote);
-    }
-    state.syncError = "";
-    setSyncStatus(`Synced ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`, false);
-    render();
-    return true;
-  } catch (error) {
-    state.syncError = error.message;
-    setSyncStatus("Sheet sync unavailable", true);
-    return false;
-  } finally {
-    state.syncing = false;
-    if (state.syncQueued) {
-      state.syncQueued = false;
-      syncToSheet();
-    }
-  }
+  state.ready = true;
 }
 
 function jsonpRequest(url) {
   return new Promise((resolve, reject) => {
     const callbackName = `weddingSheetCallback${Date.now()}${Math.random().toString(36).slice(2, 7)}`;
     const script = document.createElement("script");
-    const cleanup = (keepCallback) => {
-      delete window[callbackName];
-      script.remove();
-      if (keepCallback) window[callbackName] = () => {};
-    };
-    window[callbackName] = (payload) => {
-      cleanup(false);
-      resolve(payload);
-    };
-    script.onerror = () => {
-      cleanup(false);
-      reject(new Error("Could not read the wedding sheet."));
-    };
-    const timeout = window.setTimeout(() => {
-      cleanup(true);
-      reject(new Error("The wedding sheet timed out."));
-    }, 30000);
-    const finish = window[callbackName];
-    window[callbackName] = (payload) => {
+    let settled = false;
+    const cleanup = () => {
       window.clearTimeout(timeout);
-      finish(payload);
+      script.remove();
+      try {
+        delete window[callbackName];
+      } catch (ignored) {
+        window[callbackName] = undefined;
+      }
     };
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      fn(value);
+    };
+    window[callbackName] = (payload) => finish(resolve, payload);
+    script.onerror = () => finish(reject, new Error("Could not read the wedding sheet."));
+    const timeout = window.setTimeout(() => {
+      finish(reject, new Error("The wedding sheet timed out."));
+    }, 30000);
     script.src = `${url}${url.includes("?") ? "&" : "?"}prefix=${encodeURIComponent(callbackName)}&_=${Date.now()}`;
     document.head.appendChild(script);
   });
 }
 
-function pushDataToSheet(url) {
-  const payload = JSON.stringify({
+async function postToSheet(payload) {
+  const url = getSyncUrl();
+  if (!url) throw new Error("Sheet API URL is missing.");
+
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(payload),
+      redirect: "follow"
+    });
+    const text = await response.text();
+    const data = JSON.parse(text);
+    if (!data || data.ok === false) {
+      throw new Error((data && data.error) || "Sheet save failed.");
+    }
+    return data;
+  } catch (fetchError) {
+    // file:// / CORS fallback: fire write, then confirm with a pull
+    const body = JSON.stringify(payload);
+    const sent = navigator.sendBeacon(url, new Blob([body], { type: "text/plain;charset=utf-8" }));
+    if (!sent) throw new Error(fetchError.message || "The wedding sheet rejected the save request.");
+    await wait(1800);
+    const remote = await jsonpRequest(url);
+    if (!remote || remote.ok === false) {
+      throw new Error("Saved to sheet, but confirmation failed.");
+    }
+    return remote;
+  }
+}
+
+function wait(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+/** Pull only — never writes to the sheet. */
+async function pullFromSheet() {
+  const url = getSyncUrl();
+  if (!url) {
+    setSyncStatus("Sheet API not configured", true);
+    return false;
+  }
+  if (state.busy || state.pendingWrite) {
+    state.pullQueued = true;
+    return false;
+  }
+  state.busy = true;
+  setSyncStatus("Loading from sheet…", false);
+  try {
+    const remote = await jsonpRequest(url);
+    applyRemoteData(remote);
+
+    state.syncError = "";
+    setSyncStatus(`Live · ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`, false);
+    setLoader(false);
+    render();
+    return true;
+  } catch (error) {
+    state.syncError = error.message;
+    setSyncStatus("Sheet unavailable", true);
+    setLoader(false);
+    return false;
+  } finally {
+    state.busy = false;
+    if (state.saveQueued) {
+      state.saveQueued = false;
+      state.pullQueued = false;
+      queueSave();
+    } else if (state.pullQueued) {
+      state.pullQueued = false;
+      pullFromSheet();
+    }
+  }
+}
+
+async function writeSnapshotToSheet() {
+  const result = await postToSheet({
     action: "replace",
     data: {
       expenses: state.expenses,
@@ -234,211 +273,76 @@ function pushDataToSheet(url) {
       settings: state.settings
     }
   });
-  const sent = navigator.sendBeacon(
-    url,
-    new Blob([payload], { type: "text/plain;charset=utf-8" })
-  );
-  if (!sent) throw new Error("The wedding sheet rejected the save request.");
+  applyRemoteData(result);
+  return result;
 }
 
-async function syncToSheet() {
+/** Push current in-memory state to Sheets. Used only after website edits. */
+function saveData() {
+  return queueSave();
+}
+
+function queueSave() {
+  saveChain = saveChain.then(runSave).catch(() => {});
+  return saveChain;
+}
+
+async function runSave() {
   const url = getSyncUrl();
-  if (!url) return;
-  if (state.syncing) {
-    state.syncQueued = true;
-    return;
+  if (!url) {
+    setSyncStatus("Sheet API not configured", true);
+    showToast("Cannot save — sheet API URL missing");
+    return false;
   }
-  state.syncing = true;
+  if (state.busy) {
+    state.saveQueued = true;
+    return false;
+  }
+  state.busy = true;
+  state.pendingWrite = true;
   setSyncStatus("Saving to sheet…", false);
   try {
-    await pushDataToSheet(url);
-    state.syncDirty = false;
+    await writeSnapshotToSheet();
     state.syncError = "";
-    setSyncStatus(`Synced ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`, false);
+    setSyncStatus(`Saved · ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`, false);
+    render();
+    return true;
   } catch (error) {
     state.syncError = error.message;
-    setSyncStatus("Saved here; sheet sync failed", true);
+    setSyncStatus("Save failed", true);
+    showToast("Could not save to Google Sheet");
+    return false;
   } finally {
-    state.syncing = false;
-    if (state.syncQueued) {
-      state.syncQueued = false;
-      syncToSheet();
+    state.pendingWrite = false;
+    state.busy = false;
+    if (state.saveQueued) {
+      state.saveQueued = false;
+      state.pullQueued = false;
+      queueSave();
+    } else if (state.pullQueued) {
+      state.pullQueued = false;
+      pullFromSheet();
     }
   }
+}
+
+async function syncFromSheet() {
+  return pullFromSheet();
 }
 
 function configureSync() {
   const current = getSyncUrl();
   const url = window.prompt("Paste your deployed Google Apps Script web-app URL:", current);
   if (url === null) return;
-  state.settings.syncApiUrl = url.trim();
-  localStorage.setItem(KEYS.settings, JSON.stringify(state.settings));
-  if (!state.settings.syncApiUrl) {
-    setSyncStatus("Sheet sync not configured", true);
-    showToast("Sheet sync disabled");
+  state.apiUrl = url.trim() || SYNC_API_URL;
+  if (!state.apiUrl) {
+    setSyncStatus("Sheet API not configured", true);
+    showToast("Sheet API disabled");
     return;
   }
-  syncFromSheet().then((ok) => {
-    if (ok) showToast("Connected to wedding sheet");
-    else showToast("Could not connect to the wedding sheet");
+  pullFromSheet().then((ok) => {
+    showToast(ok ? "Connected to Google Sheet" : "Could not connect to the sheet");
   });
-}
-
-/* Seed */
-
-function buildSeedExpenses() {
-  const existing = [
-    ["Camera / Video", "Photography", "Common / All Functions", 31000, 1000, ""],
-    ["Catering", "Food", "Common / All Functions", 28000, 1000, "250–300 people"],
-    ["Tent", "Decoration", "Wedding", 25000, 1000, ""],
-    ["Light Decoration", "Decoration", "Wedding", 9000, 500, ""],
-    ["Flower Decoration", "Decoration", "Wedding", 0, 0, "Not booked"],
-    ["Travelling", "Transportation", "Common / All Functions", 0, 0, "Engagement & Wedding"],
-    ["Jewellery", "Jewellery", "Engagement / Wedding", 160000, 0, ""],
-    ["Band", "Entertainment", "Baraat", 27000, 7000, ""]
-  ];
-
-  const checklist = [
-    ["Marriage Hall / Venue", "Venue", "Wedding"],
-    ["Engagement Venue", "Venue", "Engagement"],
-    ["Stage", "Decoration", "Wedding"],
-    ["Mandap", "Decoration", "Wedding"],
-    ["Entrance Decoration", "Decoration", "Wedding"],
-    ["Table Decrations", "Decoration", "Wedding"],
-    ["Chair Decrations", "Decoration", "Wedding"],
-    ["Generator", "Venue", "Common / All Functions"],
-    ["Generator Fuel", "Miscellaneous", "Common / All Functions"],
-    ["AC / Cooler / Fan", "Venue", "Wedding"],
-    ["Cleaning", "Miscellaneous", "Common / All Functions"],
-    ["Engagement Food", "Food", "Engagement"],
-    ["Haldi Food", "Food", "Haldi"],
-    ["Mehendi Food", "Food", "Mehendi"],
-    ["Sangeet Food", "Food", "Sangeet"],
-    ["Breakfast", "Food", "Common / All Functions"],
-    ["Lunch", "Food", "Wedding"],
-    ["Dinner", "Food", "Wedding"],
-    ["Snacks", "Food", "Common / All Functions"],
-    ["Tea / Coffee", "Food", "Common / All Functions"],
-    ["Sweets", "Food", "Common / All Functions"],
-    ["Dry Fruits", "Food", "Common / All Functions"],
-    ["Fruits", "Food", "Common / All Functions"],
-    ["Water / Drinks", "Food", "Common / All Functions"],
-    ["Vendor Meals", "Food", "Common / All Functions"],
-    ["Photography", "Photography", "Common / All Functions"],
-    ["Videography", "Photography", "Common / All Functions"],
-    ["Cinematic Video", "Photography", "Common / All Functions"],
-    ["Drone", "Photography", "Wedding"],
-    ["Pre-Wedding Shoot", "Photography", "Common / All Functions"],
-    ["Album", "Photography", "Common / All Functions"],
-    ["LED Screen", "Entertainment", "Wedding"],
-    ["DJ", "Entertainment", "Sangeet"],
-    ["Sound System", "Entertainment", "Common / All Functions"],
-    ["Live Singer", "Entertainment", "Sangeet"],
-    ["Choreographer", "Entertainment", "Sangeet"],
-    ["Anchor", "Entertainment", "Reception"],
-    ["Dhol", "Entertainment", "Baraat"],
-    ["Ghodi", "Entertainment", "Baraat"],
-    ["Fireworks", "Entertainment", "Wedding"],
-    ["Engagement Outfit", "Groom", "Engagement"],
-    ["Sherwani", "Groom", "Wedding"],
-    ["Wedding Suit", "Groom", "Wedding"],
-    ["Kurta Pajama", "Groom", "Wedding"],
-    ["Shoes", "Groom", "Wedding"],
-    ["Mojari", "Groom", "Wedding"],
-    ["Turban / Safa", "Groom", "Wedding"],
-    ["Sehra", "Groom", "Wedding"],
-    ["Kalgi", "Groom", "Wedding"],
-    ["Watch", "Groom", "Wedding"],
-    ["Perfume", "Groom", "Wedding"],
-    ["Accessories", "Groom", "Wedding"],
-    ["Salon / Grooming", "Groom", "Wedding"],
-    ["Groom Jewellery", "Jewellery", "Wedding"],
-    ["Bride Jewellery", "Jewellery", "Wedding"],
-    ["Bride Clothes", "Gifts", "Wedding"],
-    ["Bride Gifts", "Gifts", "Wedding"],
-    ["Bride Family Gifts", "Gifts", "Wedding"],
-    ["Relatives Gifts", "Gifts", "Wedding"],
-    ["Shagun Envelopes", "Gifts", "Wedding"],
-    ["Dry Fruit Gift Boxes", "Gifts", "Wedding"],
-    ["Sweet Boxes", "Gifts", "Wedding"],
-    ["Return Gifts", "Gifts", "Reception"],
-    ["Groom Car", "Transportation", "Wedding"],
-    ["Car Decoration", "Transportation", "Wedding"],
-    ["Luxury Car", "Transportation", "Wedding"],
-    ["Baraat Bus", "Transportation", "Baraat"],
-    ["Guest Transportation", "Transportation", "Common / All Functions"],
-    ["Airport Pickup", "Transportation", "Common / All Functions"],
-    ["Railway Station Pickup", "Transportation", "Common / All Functions"],
-    ["Local Cabs", "Transportation", "Common / All Functions"],
-    ["Fuel", "Transportation", "Common / All Functions"],
-    ["Toll", "Transportation", "Common / All Functions"],
-    ["Parking", "Transportation", "Common / All Functions"],
-    ["Driver Charges", "Transportation", "Common / All Functions"],
-    ["Hotel Rooms", "Accommodation", "Common / All Functions"],
-    ["Guest House", "Accommodation", "Common / All Functions"],
-    ["Guest Breakfast", "Accommodation", "Common / All Functions"],
-    ["Guest Meals", "Accommodation", "Common / All Functions"],
-    ["Welcome Kits", "Accommodation", "Common / All Functions"],
-    ["Room Toiletries", "Accommodation", "Common / All Functions"],
-    ["Guest Transfers", "Accommodation", "Common / All Functions"],
-    ["Driver Accommodation", "Accommodation", "Common / All Functions"],
-    ["Wedding Cards", "Invitations", "Wedding"],
-    ["Engagement Cards", "Invitations", "Engagement"],
-    ["Envelopes", "Invitations", "Common / All Functions"],
-    ["Digital Invitation", "Invitations", "Common / All Functions"],
-    ["Welcome Boards", "Invitations", "Wedding"],
-    ["Direction Boards", "Invitations", "Wedding"],
-    ["Menu Cards", "Invitations", "Wedding"],
-    ["Invitation Delivery", "Invitations", "Common / All Functions"],
-    ["Courier", "Invitations", "Common / All Functions"],
-    ["Pandit", "Rituals", "Wedding"],
-    ["Pandit Dakshina", "Rituals", "Wedding"],
-    ["Puja Items", "Rituals", "Wedding"],
-    ["Havan Samagri", "Rituals", "Wedding"],
-    ["Garlands", "Rituals", "Wedding"],
-    ["Coconut / Fruits", "Rituals", "Wedding"],
-    ["Religious Items", "Rituals", "Wedding"],
-    ["Tailoring / Alterations", "Miscellaneous", "Common / All Functions"],
-    ["Laundry / Ironing", "Miscellaneous", "Common / All Functions"],
-    ["Medicines / First Aid", "Miscellaneous", "Common / All Functions"],
-    ["Vendor Tips", "Miscellaneous", "Common / All Functions"],
-    ["Band Tips", "Miscellaneous", "Baraat"],
-    ["Ghodi Tips", "Miscellaneous", "Baraat"],
-    ["Driver Tips", "Miscellaneous", "Common / All Functions"],
-    ["Hotel Staff Tips", "Miscellaneous", "Common / All Functions"],
-    ["Emergency Expenses", "Miscellaneous", "Common / All Functions"],
-    ["Miscellaneous", "Miscellaneous", "Common / All Functions"]
-  ];
-
-  const seen = new Set();
-  const rows = [];
-
-  existing.forEach((row) => {
-    seen.add(row[0].toLowerCase());
-    rows.push(row);
-  });
-
-  checklist.forEach((row) => {
-    const key = row[0].toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    rows.push([row[0], row[1], row[2], 0, 0, ""]);
-  });
-
-  const start = Date.parse("2026-01-01T00:00:00.000Z");
-  return rows.map((row, index) => ({
-    id: "seed-" + slug(row[0]),
-    expense: row[0],
-    category: row[1],
-    function: row[2],
-    bookingValue: row[3],
-    advancePaid: row[4],
-    vendor: "",
-    vendorPhone: "",
-    contactPerson: "",
-    notes: row[5],
-    createdAt: new Date(start + index * 1000).toISOString()
-  }));
 }
 
 function slug(value) {
@@ -783,8 +687,13 @@ function renderDashboard() {
   `).join("");
 
   const dashboardMeta = document.getElementById("dashboard-meta");
-  dashboardMeta.textContent = state.syncError ? "Local view · sheet sync needs attention" : "Live data from Google Sheets";
+  dashboardMeta.textContent = state.syncError
+    ? "Could not reach Google Sheets"
+    : state.ready
+      ? "Google Sheets is the live database"
+      : "Loading from Google Sheets…";
   renderDashboardInsights(totals, paidPercent, topPending);
+  renderWeddingDetails();
 
   renderSummary("function-summary", summarize("function"), "Function");
   renderSummary("category-summary", summarize("category"), "Category");
@@ -894,7 +803,8 @@ function renderGuestSummary() {
   if (!state.guests.length) {
     document.getElementById("guest-summary").innerHTML = `
       <div class="empty">
-        <p>No guests added yet.</p>
+        <span class="empty-emoji">🥂</span>
+        <p>No guests in the sheet yet.</p>
         <button type="button" class="linkish" data-action="add-guest">Add your first guest</button>
       </div>
     `;
@@ -944,7 +854,7 @@ function renderPending() {
   const viewAll = document.getElementById("view-pending");
 
   if (!pending.length) {
-    list.innerHTML = `<div class="empty"><p>No pending payments 🎉</p></div>`;
+    list.innerHTML = `<div class="empty"><span class="empty-emoji">🎉</span><p>No pending payments</p></div>`;
     viewAll.hidden = true;
     return;
   }
@@ -1047,8 +957,8 @@ function renderBudget() {
     cards.hidden = true;
     empty.hidden = false;
     empty.innerHTML = state.expenses.length
-      ? `<p>No expenses found.</p><button type="button" class="linkish" id="budget-clear-empty">Clear Filters</button>`
-      : `<p>No expenses found.</p><button type="button" class="linkish" data-action="add-expense">Add your first expense</button>`;
+      ? `<span class="empty-emoji">🔍</span><p>No expenses found.</p><button type="button" class="linkish" id="budget-clear-empty">Clear Filters</button>`
+      : `<span class="empty-emoji">🌸</span><p>No expenses in the sheet yet.</p><button type="button" class="linkish" data-action="add-expense">Add your first expense</button>`;
     return;
   }
 
@@ -1143,8 +1053,8 @@ function renderPayments() {
     cards.hidden = true;
     empty.hidden = false;
     empty.innerHTML = state.payments.length
-      ? `<p>No payments match your search.</p><button type="button" class="linkish" id="payment-clear-empty">Clear Filters</button>`
-      : `<p>No payments recorded yet.</p>`;
+      ? `<span class="empty-emoji">🔍</span><p>No payments match your search.</p><button type="button" class="linkish" id="payment-clear-empty">Clear Filters</button>`
+      : `<span class="empty-emoji">💸</span><p>No payments recorded in the sheet yet.</p>`;
     return;
   }
 
@@ -1235,8 +1145,8 @@ function renderGuests() {
     cards.hidden = true;
     empty.hidden = false;
     empty.innerHTML = state.guests.length
-      ? `<p>No guests found.</p><button type="button" class="linkish" id="guest-clear-empty">Clear Filters</button>`
-      : `<p>No guests added yet.</p><button type="button" class="linkish" data-action="add-guest">Add your first guest</button>`;
+      ? `<span class="empty-emoji">🔍</span><p>No guests found.</p><button type="button" class="linkish" id="guest-clear-empty">Clear Filters</button>`
+      : `<span class="empty-emoji">🥂</span><p>No guests in the sheet yet.</p><button type="button" class="linkish" data-action="add-guest">Add your first guest</button>`;
     return;
   }
 
@@ -1426,7 +1336,7 @@ function readAmounts(ids) {
   return { values };
 }
 
-function saveExpense(event) {
+async function saveExpense(event) {
   event.preventDefault();
   clearFormError("expense");
   const name = document.getElementById("expense-name").value.trim();
@@ -1468,21 +1378,27 @@ function saveExpense(event) {
 
   const id = document.getElementById("expense-form").dataset.id;
   let savedId = id;
+  state.pendingWrite = true;
   if (id) {
     const current = getExpense(id);
-    if (!current) return;
+    if (!current) {
+      state.pendingWrite = false;
+      return;
+    }
     Object.assign(current, payload);
   } else {
     savedId = uid("exp");
     state.expenses.push({ id: savedId, ...payload, createdAt: new Date().toISOString() });
   }
 
-  saveData();
   closeModal();
   switchTab("budget");
   render();
-  showToast(id ? "Expense updated" : "Expense added");
-  highlight(savedId);
+  const ok = await saveData();
+  if (ok) {
+    showToast(id ? "Expense updated" : "Expense added");
+    highlight(savedId);
+  }
 }
 
 function openPaymentModal(id) {
@@ -1571,21 +1487,28 @@ function savePayment(event) {
 
   const id = document.getElementById("payment-form").dataset.id;
   let savedId = id;
+  state.pendingWrite = true;
   if (id) {
     const current = state.payments.find((item) => item.id === id);
-    if (!current) return;
+    if (!current) {
+      state.pendingWrite = false;
+      return;
+    }
     Object.assign(current, payload);
   } else {
     savedId = uid("pay");
     state.payments.push({ id: savedId, ...payload, createdAt: new Date().toISOString() });
   }
 
-  saveData();
   closeModal();
   switchTab("payments");
   render();
-  showToast(id ? "Payment updated" : "Payment recorded");
-  highlight(savedId);
+  saveData().then((ok) => {
+    if (ok) {
+      showToast(id ? "Payment updated" : "Payment recorded");
+      highlight(savedId);
+    }
+  });
 }
 
 function renderGuestFunctionChecks(selected) {
@@ -1675,21 +1598,28 @@ function saveGuest(event) {
 
   const id = document.getElementById("guest-form").dataset.id;
   let savedId = id;
+  state.pendingWrite = true;
   if (id) {
     const current = getGuest(id);
-    if (!current) return;
+    if (!current) {
+      state.pendingWrite = false;
+      return;
+    }
     Object.assign(current, payload);
   } else {
     savedId = uid("gst");
     state.guests.push({ id: savedId, ...payload, createdAt: new Date().toISOString() });
   }
 
-  saveData();
   closeModal();
   switchTab("guests");
   render();
-  showToast(id ? "Guest updated" : "Guest added");
-  highlight(savedId);
+  saveData().then((ok) => {
+    if (ok) {
+      showToast(id ? "Guest updated" : "Guest added");
+      highlight(savedId);
+    }
+  });
 }
 
 function highlight(id) {
@@ -1751,10 +1681,11 @@ async function deleteExpense(id) {
     confirmLabel
   });
   if (!ok) return;
+  state.pendingWrite = true;
   state.expenses = state.expenses.filter((item) => item.id !== id);
-  saveData();
   render();
-  showToast("Expense deleted");
+  const saved = await saveData();
+  if (saved) showToast("Expense deleted");
 }
 
 async function deletePayment(id) {
@@ -1768,10 +1699,11 @@ async function deletePayment(id) {
     confirmLabel: "Delete"
   });
   if (!ok) return;
+  state.pendingWrite = true;
   state.payments = state.payments.filter((item) => item.id !== id);
-  saveData();
   render();
-  showToast("Payment deleted");
+  const saved = await saveData();
+  if (saved) showToast("Payment deleted");
 }
 
 async function deleteGuest(id) {
@@ -1784,10 +1716,11 @@ async function deleteGuest(id) {
     confirmLabel: "Delete"
   });
   if (!ok) return;
+  state.pendingWrite = true;
   state.guests = state.guests.filter((item) => item.id !== id);
-  saveData();
   render();
-  showToast("Guest deleted");
+  const saved = await saveData();
+  if (saved) showToast("Guest deleted");
 }
 
 function exportData() {
@@ -1827,19 +1760,20 @@ async function handleImport(file) {
     if (state.expenses.length || state.payments.length || state.guests.length) {
       const ok = await confirmAction({
         title: "Import data?",
-        message: "Import will replace all current expenses, payments, and guests.",
+        message: "Import will replace all expenses, payments, and guests in Google Sheets.",
         confirmLabel: "Import",
         danger: false
       });
       if (!ok) return;
     }
+    state.pendingWrite = true;
     state.expenses = data.expenses.map(sanitizeExpense).filter(Boolean);
     state.payments = data.payments.map(sanitizePayment).filter(Boolean);
     state.guests = Array.isArray(data.guests) ? data.guests.map(sanitizeGuest).filter(Boolean) : [];
     state.settings = { initialized: true, ...(data.settings && typeof data.settings === "object" ? data.settings : {}) };
-    saveData();
     render();
-    showToast("Data imported");
+    const saved = await saveData();
+    if (saved) showToast("Data imported to Google Sheet");
   } catch (err) {
     showToast("That file is not a valid export.");
   } finally {
@@ -1850,22 +1784,23 @@ async function handleImport(file) {
 async function clearAllData() {
   const ok = await confirmAction({
     title: "Clear all data?",
-    message: "This will permanently delete all expenses, payments, and guests stored in this browser.",
+    message: "This will permanently delete all expenses, payments, and guests in Google Sheets.",
     detail: "This cannot be undone.",
     confirmLabel: "Clear All Data"
   });
   if (!ok) return;
+  state.pendingWrite = true;
   state.expenses = [];
   state.payments = [];
   state.guests = [];
   state.settings = { initialized: true, clearedAt: new Date().toISOString() };
-  saveData();
   clearFilters("budget");
   clearFilters("payment");
   clearFilters("guest");
   switchTab("dashboard");
   render();
-  showToast("All data cleared");
+  const saved = await saveData();
+  if (saved) showToast("Google Sheet cleared");
 }
 
 function clearFilters(which) {
@@ -1981,7 +1916,7 @@ function onClick(event) {
   }
   if (action === "sync") {
     toggleSettings(false);
-    syncFromSheet().then((ok) => showToast(ok ? "Data synced" : "Could not sync with the wedding sheet"));
+    pullFromSheet().then((ok) => showToast(ok ? "Loaded latest sheet data" : "Could not load from Google Sheet"));
   }
   if (action === "view-event") viewEventInBudget(button.dataset.event || "");
   if (action === "clear") {
@@ -2042,23 +1977,18 @@ function bindEvents() {
     const file = event.target.files && event.target.files[0];
     if (file) handleImport(file);
   });
-
-  window.addEventListener("storage", (event) => {
-    if (!event.key || event.key.startsWith("wedding_")) {
-      loadData();
-      render();
-    }
-  });
 }
 
 function init() {
-  loadData();
+  purgeLegacyLocalStorage();
   bindEvents();
   switchTab("dashboard");
-  render();
-  if (state.loadError) showToast(state.loadError);
-  syncFromSheet();
-  window.setInterval(() => syncFromSheet(), 30000);
+  setLoader(true);
+  setSyncStatus("Loading from sheet…", false);
+  pullFromSheet().then((ok) => {
+    if (!ok) showToast("Could not load Google Sheet data");
+  });
+  window.setInterval(() => pullFromSheet(), 30000);
 }
 
 init();
