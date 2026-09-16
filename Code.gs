@@ -36,7 +36,7 @@ const EVENTS = [
 ];
 
 function doGet(event) {
-  const payload = { ok: true, ...readAll() };
+  const payload = { ok: true, ...readData() };
   let callback = event && event.parameter && (event.parameter.prefix || event.parameter.callback);
   if (!callback && event && event.queryString) {
     const match = event.queryString.match(/(?:^|&)(?:prefix|callback)=([^&]+)/);
@@ -51,7 +51,7 @@ function doPost(event) {
     const body = JSON.parse(event.postData.contents || "{}");
     if (body.action === "replace") {
       replaceAll(body.data || {});
-      return jsonResponse({ ok: true, ...readAll() });
+      return jsonResponse({ ok: true, ...readData() });
     }
     return jsonResponse({ ok: false, error: "Unsupported action" });
   } catch (error) {
@@ -66,6 +66,11 @@ function getSheet() {
 function ensureTab(tab) {
   const spreadsheet = getSheet();
   const sheet = spreadsheet.getSheetByName(tab.name) || spreadsheet.insertSheet(tab.name);
+  ensureHeaders(sheet, tab);
+  styleTab(sheet, tab);
+}
+
+function ensureHeaders(sheet, tab) {
   const headers = tab.columns.map((column) => column[1]);
   if (sheet.getLastRow() === 0) {
     sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
@@ -75,13 +80,29 @@ function ensureTab(tab) {
       sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
     }
   }
-  styleTab(sheet, tab);
 }
 
 function readAll() {
   Object.keys(TABS).forEach((key) => ensureTab(TABS[key]));
   ensureEventsTab();
   updateDashboard();
+  const result = readTabs();
+  if (result.expenses.length || result.payments.length || result.guests.length) return result;
+
+  const legacy = readLegacy();
+  if (legacy.expenses.length || legacy.payments.length || legacy.guests.length) {
+    replaceAll(legacy);
+    return legacy;
+  }
+  return result;
+}
+
+function readData() {
+  Object.keys(TABS).forEach((key) => {
+    const tab = TABS[key];
+    const sheet = getSheet().getSheetByName(tab.name) || getSheet().insertSheet(tab.name);
+    ensureHeaders(sheet, tab);
+  });
   const result = readTabs();
   if (result.expenses.length || result.payments.length || result.guests.length) return result;
 

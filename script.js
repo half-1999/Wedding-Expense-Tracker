@@ -1,6 +1,6 @@
 /* Wedding Expense Manager — local cache with Google Sheets sync. */
 
-const SYNC_API_URL = "https://script.google.com/macros/s/AKfycbz2moL-yQeyo2WnACMt3Uaueh7ExS7FWXzEOWoR_4iI0WYE87_1ATAPa7qNBk0isRGtNw/exec";
+const SYNC_API_URL = "https://script.google.com/macros/s/AKfycbwb-d5r9XQRI1MKgWUQzqnjO10htm_ka0_9ASGb2MyzqBSxgDfmibW3lK7SL5-wJdk/exec";
 
 const KEYS = {
   expenses: "wedding_expenses",
@@ -208,6 +208,15 @@ function jsonpRequest(url) {
     script.onerror = () => {
       cleanup();
       reject(new Error("Could not read the wedding sheet."));
+    };
+    const timeout = window.setTimeout(() => {
+      cleanup();
+      reject(new Error("The wedding sheet timed out."));
+    }, 12000);
+    const finish = window[callbackName];
+    window[callbackName] = (payload) => {
+      window.clearTimeout(timeout);
+      finish(payload);
     };
     script.src = `${url}${url.includes("?") ? "&" : "?"}prefix=${encodeURIComponent(callbackName)}&_=${Date.now()}`;
     document.head.appendChild(script);
