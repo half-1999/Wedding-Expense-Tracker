@@ -15,7 +15,8 @@ const TABS = {
     ["id", "Record ID"], ["name", "Guest Name"], ["phone", "Phone"], ["phoneAlt", "Alternate Phone"],
     ["functions", "Events"], ["side", "Side"], ["relation", "Relation"], ["city", "City / Place"],
     ["address", "Address"], ["adults", "Adults"], ["children", "Children"], ["rsvp", "RSVP Status"],
-    ["stay", "Accommodation"], ["travel", "Transport"], ["notes", "Remarks"], ["createdAt", "Created At"]
+    ["stay", "Accommodation"], ["travel", "Transport"], ["notes", "Remarks"], ["createdAt", "Created At"],
+    ["inviteEngagement", "Engagement Invite"], ["inviteWedding", "Wedding Invite"]
   ] },
   settings: { name: "Settings", columns: [["key", "Setting"], ["value", "Value"]] }
 };
@@ -47,6 +48,10 @@ function doGet(event) {
       payload = deleteRecord(params.type, params.id);
     } else if (params.action === "ping") {
       payload = { ok: true, updatedAt: getUpdatedAt(), ping: true };
+    } else if (params.action === "rsvpGet") {
+      payload = getRsvpGuest(params.id || params.g);
+    } else if (params.action === "rsvpSubmit") {
+      payload = submitRsvp(params);
     } else {
       const current = getUpdatedAt();
       if (params.since && String(params.since) === String(current)) {
@@ -106,6 +111,9 @@ function doPost(event) {
         settings: data.settings
       });
     }
+    if (body.action === "rsvpSubmit") {
+      return jsonResponse(submitRsvp(body));
+    }
     return jsonResponse({ ok: false, error: "Unsupported action" });
   } catch (error) {
     return jsonResponse({ ok: false, error: error.message });
@@ -143,7 +151,8 @@ function ensureTab(tab) {
 
 function ensureHeaders(sheet, tab) {
   const headers = tab.columns.map((column) => column[1]);
-  if (sheet.getLastRow() === 0) {
+  const lastCol = Math.max(sheet.getLastColumn(), 0);
+  if (sheet.getLastRow() === 0 || lastCol < headers.length) {
     sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
   }
 }
@@ -378,6 +387,83 @@ function updateDashboard() {
     ['=COUNTIF(Expenses!E2:E,">0")'], ['=SUMPRODUCT((Expenses!E2:E>0)*(Expenses!F2:F>=Expenses!E2:E))'], ["=SUM(Guests!J2:J)+SUM(Guests!K2:K)"]
   ]);
   sheet.getRange("B5:B7").setNumberFormat("₹#,##0");
+}
+
+function getRsvpGuest(guestId) {
+  const id = String(guestId || "").trim();
+  if (!id) return { ok: false, error: "Missing guest id" };
+  const data = readDataFast();
+  const guest = (data.guests || []).find((item) => String(item.id) === id);
+  if (!guest) return { ok: false, error: "Invitation not found" };
+  return {
+    ok: true,
+    guest: {
+      id: String(guest.id),
+      name: String(guest.name || ""),
+      functions: Array.isArray(guest.functions) ? guest.functions : String(guest.functions || "").split(/\s*\|\s*/).filter(Boolean),
+      adults: Number(guest.adults) || 1,
+      children: Number(guest.children) || 0,
+      rsvp: String(guest.rsvp || "Not Invited"),
+      stay: String(guest.stay || "No"),
+      travel: String(guest.travel || "No"),
+      side: String(guest.side || "Groom")
+    },
+    settings: {
+      coupleNames: data.settings && data.settings.coupleNames ? String(data.settings.coupleNames) : "",
+      engagementDate: data.settings && data.settings.engagementDate ? String(data.settings.engagementDate) : "",
+      weddingDate: data.settings && data.settings.weddingDate ? String(data.settings.weddingDate) : ""
+    }
+  };
+}
+
+function submitRsvp(params) {
+  const id = String((params && (params.id || params.g)) || "").trim();
+  if (!id) return { ok: false, error: "Missing guest id" };
+
+  const allowedRsvp = { Confirmed: 1, Maybe: 1, Declined: 1, "Invite Sent": 1 };
+  const rsvp = String((params && params.rsvp) || "").trim();
+  if (!allowedRsvp[rsvp]) return { ok: false, error: "Choose Confirmed, Maybe, or Declined" };
+
+  const sheet = ensureTab(TABS.guests);
+  const fields = TABS.guests.columns.map((column) => column[0]);
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return { ok: false, error: "Invitation not found" };
+
+  const width = fields.length;
+  const values = sheet.getRange(2, 1, lastRow - 1, width).getValues();
+  const idIndex = fields.indexOf("id");
+  let rowIndex = -1;
+  for (let i = 0; i < values.length; i += 1) {
+    if (String(values[i][idIndex]).trim() === id) {
+      rowIndex = i;
+      break;
+    }
+  }
+  if (rowIndex < 0) return { ok: false, error: "Invitation not found" };
+
+  const row = values[rowIndex];
+  const setField = function (key, value) {
+    const index = fields.indexOf(key);
+    if (index >= 0) row[index] = value;
+  };
+
+  setField("rsvp", rsvp);
+  if (params.adults != null && params.adults !== "") setField("adults", Math.max(0, Math.round(Number(params.adults) || 0)));
+  if (params.children != null && params.children !== "") setField("children", Math.max(0, Math.round(Number(params.children) || 0)));
+  if (params.stay) setField("stay", String(params.stay));
+  if (params.travel) setField("travel", String(params.travel));
+  if (params.notes != null) {
+    const notesIndex = fields.indexOf("notes");
+    if (notesIndex >= 0 && String(params.notes).trim()) {
+      const existing = String(row[notesIndex] || "").trim();
+      const note = String(params.notes).trim();
+      row[notesIndex] = existing ? existing + " | RSVP: " + note : "RSVP: " + note;
+    }
+  }
+
+  sheet.getRange(rowIndex + 2, 1, 1, width).setValues([row]);
+  const updatedAt = bumpUpdatedAt(true);
+  return { ok: true, updatedAt: updatedAt, rsvp: rsvp, id: id };
 }
 
 function readLegacy() {

@@ -1017,6 +1017,150 @@ body.modal-open {
   }
 }
 
+.invite-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.invite-card-grid,
+.invite-pick-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.invite-preview,
+.invite-pick {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.75);
+  text-align: left;
+}
+
+.invite-pick {
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.invite-pick.is-selected {
+  border-color: #b84d6d;
+  box-shadow: 0 0 0 2px rgba(184, 77, 109, 0.18);
+}
+
+.invite-preview-art,
+.invite-pick-art {
+  aspect-ratio: 3 / 4;
+  overflow: hidden;
+  border-radius: 12px;
+  background: #f7e8ee;
+  display: grid;
+  place-items: center;
+}
+
+.invite-preview-art img,
+.invite-pick-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.invite-missing {
+  padding: 12px;
+  color: var(--muted);
+  font-size: 0.85rem;
+  text-align: center;
+}
+
+.invite-wa-tip {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(37, 211, 102, 0.12);
+  border: 1px solid rgba(18, 140, 126, 0.22);
+  color: #1f6b5c;
+  line-height: 1.45;
+}
+
+.btn-wa {
+  color: #128c7e;
+  border-color: rgba(18, 140, 126, 0.28);
+  background: rgba(37, 211, 102, 0.12);
+}
+
+.btn-wa:hover {
+  background: rgba(37, 211, 102, 0.2);
+}
+
+.btn-wa-solid {
+  background: #25d366;
+  border-color: #1ebe57;
+  color: #fff;
+}
+
+.btn-wa-solid:hover {
+  background: #1ebe57;
+}
+
+.wa-icon {
+  flex: 0 0 auto;
+  display: block;
+}
+
+.actions .btn-wa {
+  font: inherit;
+  font-size: 0.82rem;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(18, 140, 126, 0.28);
+  cursor: pointer;
+}
+
+.rsvp-page {
+  min-height: 100vh;
+}
+
+.rsvp-shell {
+  max-width: 520px;
+  margin: 0 auto;
+  padding: 28px 16px 48px;
+}
+
+.rsvp-card {
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  background:
+    linear-gradient(180deg, #fff8fb, #fff),
+    #fff;
+  box-shadow: 0 18px 40px rgba(59, 31, 46, 0.12);
+}
+
+.rsvp-card .eyebrow {
+  margin: 0 0 6px;
+  color: var(--muted);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+}
+
+.rsvp-card h1 {
+  margin: 0 0 8px;
+  font-family: var(--display);
+  font-size: 2rem;
+}
+
+@media (max-width: 900px) {
+  .invite-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 .amounts.two {
   grid-template-columns: 1fr 1fr;
 }

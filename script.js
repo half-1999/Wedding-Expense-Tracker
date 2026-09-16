@@ -1,6 +1,6 @@
 /* Wedding Expense Manager — Google Sheets is the only database. */
 
-const SYNC_API_URL = "https://script.google.com/macros/s/AKfycbw3ZIXJqTsuk0BZqVeO__RtjqD1CBfc8RNwQsjclRdX9lZfWdN3xhYgx1gehGmEH7jkMA/exec";
+const SYNC_API_URL = "https://script.google.com/macros/s/AKfycbwwmRmRZU-2tFSplx1jr--PJJeEVMWZwg2E37iXHjS9_d2iuZjDuUOnr6uYO_uLmIyr/exec";
 const LEGACY_LOCAL_KEYS = [
   "wedding_expenses",
   "wedding_payments",
@@ -59,9 +59,38 @@ const GUEST_RELATIONS = [
 ];
 
 const RSVP_STATUSES = ["Not Invited", "Invite Sent", "Confirmed", "Maybe", "Declined"];
+const INVITE_STATUSES = ["Not Sent", "Sent"];
 const PAYMENT_MODES = ["Cash", "UPI", "Bank Transfer", "Card", "Other"];
 const PENDING_LIMIT = 8;
 const OTHER = "__other__";
+
+const INVITE_CARDS = {
+  engagement: {
+    key: "engagement",
+    label: "Engagement",
+    guestField: "inviteEngagement",
+    files: [
+      "invitations/engagement.png",
+      "invitations/Engagement Card.png"
+    ]
+  },
+  wedding: {
+    key: "wedding",
+    label: "Wedding",
+    guestField: "inviteWedding",
+    files: [
+      "invitations/wedding.png",
+      "invitations/Wedding Card.png"
+    ]
+  }
+};
+
+const inviteShareState = {
+  contact: null,
+  cardKey: "engagement",
+  cardUrl: "",
+  resolved: {}
+};
 
 const state = {
   expenses: [],
@@ -528,6 +557,8 @@ function sanitizeGuest(raw) {
     stay: ["Yes", "No", "Maybe"].includes(raw.stay) ? raw.stay : "No",
     travel: ["Yes", "No", "Pickup Needed"].includes(raw.travel) ? raw.travel : "No",
     notes: String(raw.notes || raw.remark || ""),
+    inviteEngagement: INVITE_STATUSES.includes(raw.inviteEngagement) ? raw.inviteEngagement : "Not Sent",
+    inviteWedding: INVITE_STATUSES.includes(raw.inviteWedding) ? raw.inviteWedding : "Not Sent",
     createdAt: raw.createdAt || new Date().toISOString()
   };
 }
@@ -853,11 +884,12 @@ function chips(list) {
 /* Render */
 
 function render(parts) {
-  const which = parts || ["dashboard", "budget", "payments", "guests"];
+  const which = parts || ["dashboard", "budget", "payments", "guests", "invitations"];
   if (which.includes("dashboard")) renderDashboard();
   if (which.includes("budget")) renderBudget();
   if (which.includes("payments")) renderPayments();
   if (which.includes("guests")) renderGuests();
+  if (which.includes("invitations")) renderInvitations();
   const detail = document.getElementById("budget-detail");
   if (detail && !detail.hidden && detail.dataset.expenseId) {
     if (getExpense(detail.dataset.expenseId)) openBudgetDetail(detail.dataset.expenseId);
@@ -1473,12 +1505,515 @@ function guestCard(guest) {
 }
 
 function actionButtons(type, id) {
+  const whatsapp = type === "guest"
+    ? whatsappButton("whatsapp-guest", { id })
+    : "";
   return `
     <div class="actions">
+      ${whatsapp}
       <button type="button" data-action="edit-${type}" data-id="${escapeHtml(id)}">Edit</button>
       <button type="button" class="danger" data-action="delete-${type}" data-id="${escapeHtml(id)}">Delete</button>
     </div>
   `;
+}
+
+function whatsappIcon(size) {
+  const s = size || 16;
+  return `<svg class="wa-icon" viewBox="0 0 24 24" width="${s}" height="${s}" aria-hidden="true"><path fill="currentColor" d="M12.04 2C6.58 2 2.15 6.43 2.15 11.89c0 1.96.52 3.8 1.44 5.42L2 22l4.85-1.55a9.86 9.86 0 0 0 5.19 1.44h.01c5.46 0 9.89-4.43 9.89-9.89C21.94 6.43 17.5 2 12.04 2zm5.75 14.08c-.24.68-1.4 1.25-1.93 1.33-.49.07-1.12.1-1.81-.11-.42-.13-.96-.31-1.66-.61-2.92-1.26-4.82-4.2-4.97-4.39-.14-.19-1.18-1.57-1.18-3 0-1.42.75-2.12 1.01-2.41.27-.29.58-.36.78-.36h.56c.18 0 .42-.07.66.5.24.59.82 2.01.89 2.16.07.15.12.32.02.51-.1.2-.15.32-.3.5-.15.17-.31.39-.44.52-.15.15-.3.31-.13.6.17.29.76 1.25 1.63 2.03 1.12 1 2.07 1.31 2.36 1.46.29.15.46.12.63-.07.17-.2.73-.85.93-1.14.2-.29.39-.24.66-.15.27.1 1.72.81 2.02.96.29.15.49.22.56.34.08.13.08.74-.16 1.42z"/></svg>`;
+}
+
+function whatsappButton(action, attrs) {
+  const extra = Object.keys(attrs || {}).map((key) => `data-${key}="${escapeHtml(String(attrs[key]))}"`).join(" ");
+  return `<button type="button" class="btn-wa" data-action="${escapeHtml(action)}" ${extra}>${whatsappIcon(16)} WhatsApp</button>`;
+}
+
+/* Invitations + WhatsApp */
+
+function getVendorInviteMap() {
+  try {
+    const raw = state.settings && state.settings.vendorInvites;
+    if (!raw) return {};
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (ignored) {
+    return {};
+  }
+}
+
+function setVendorInvite(expenseId, cardKey, status) {
+  const map = getVendorInviteMap();
+  const current = map[expenseId] && typeof map[expenseId] === "object" ? map[expenseId] : {};
+  current[cardKey] = status;
+  map[expenseId] = current;
+  state.settings.vendorInvites = JSON.stringify(map);
+}
+
+function getVendorInviteStatus(expenseId, cardKey) {
+  const map = getVendorInviteMap();
+  const row = map[expenseId];
+  return row && INVITE_STATUSES.includes(row[cardKey]) ? row[cardKey] : "Not Sent";
+}
+
+function normalizeWhatsAppPhone(phone) {
+  let digits = String(phone || "").replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.length === 10) digits = "91" + digits;
+  if (digits.length === 11 && digits.startsWith("0")) digits = "91" + digits.slice(1);
+  return digits;
+}
+
+function rsvpPageUrl(guestId) {
+  const url = new URL("rsvp.html", window.location.href);
+  if (guestId) url.searchParams.set("g", guestId);
+  return url.href;
+}
+
+function inviteMessageFor(contact, cardKey) {
+  const isEngagement = cardKey === "engagement";
+  const couple = String((state.settings && state.settings.coupleNames) || "").trim() || "Aman & Aakansha";
+  const when = settingValue(isEngagement ? "engagementDate" : "weddingDate", "");
+  const name = String(contact.name || "").trim() || "Ji";
+  const occasionEn = isEngagement ? "Engagement Celebration" : "Wedding Celebration";
+  const occasionHi = isEngagement ? "सगाई समारोह" : "विवाह समारोह";
+  const stepLine = isEngagement
+    ? "bless the couple as they take their first step towards a lifetime of togetherness"
+    : "bless the couple as they begin their sacred journey of marriage";
+  const rsvp = contact.kind === "guest" ? rsvpPageUrl(contact.id) : "";
+
+  return [
+    `🌸🙏 *Namaste ${name},* 🙏🌸`,
+    ``,
+    `With immense joy and heartfelt gratitude, we are delighted to share a very special moment of our lives with you. 💕✨`,
+    ``,
+    `💍 *${couple}* 💍`,
+    `are beginning a beautiful new chapter together, and it would mean so much to us to have your _blessings_ and presence on this auspicious occasion. 🥰🙏`,
+    ``,
+    `🌺 *हमारे जीवन के इस शुभ और खूबसूरत अवसर पर आपका आशीर्वाद हमारे लिए सबसे अनमोल उपहार होगा।*`,
+    `आपकी गरिमामयी उपस्थिति हमारे *${occasionHi}* की खुशियों को और भी खास बना देगी। ❤️`,
+    ``,
+    when ? `📅 *Date:* ${when}` : null,
+    `💑 *Celebration:* ${couple}'s ${occasionEn}`,
+    ``,
+    `We warmly invite you to celebrate this beautiful beginning with us and ${stepLine}. 💞🌿`,
+    ``,
+    `🌸 आप सादर आमंत्रित हैं। कृपया अपना बहुमूल्य समय निकालकर हमें अपने आशीर्वाद से अनुग्रहित करें। 🌸`,
+    ``,
+    rsvp ? `📩 *Kindly RSVP here:*` : `🙏 We look forward to celebrating with you.`,
+    rsvp || null,
+    ``,
+    `💌 Invitation card is also being shared with you here on WhatsApp.`,
+    ``,
+    `🙏✨ आपका आशीर्वाद और स्नेह हमारे लिए सदैव विशेष रहेगा। ✨🙏`,
+    ``,
+    `_With love & warm regards,_`,
+    `*${couple}* 💕💍`
+  ].filter((line) => line !== null).join("\n");
+}
+
+function listInviteContacts() {
+  const guests = state.guests.map((guest) => ({
+    id: guest.id,
+    kind: "guest",
+    name: guest.name,
+    phone: guest.phone || guest.phoneAlt,
+    secondary: guest.functions.join(", "),
+    rsvp: guest.rsvp,
+    inviteEngagement: guest.inviteEngagement || "Not Sent",
+    inviteWedding: guest.inviteWedding || "Not Sent"
+  }));
+
+  const vendors = [];
+  const seen = new Set();
+  state.expenses.forEach((expense) => {
+    const phone = expense.vendorPhone || "";
+    const name = expense.vendor || expense.contactPerson || expense.expense;
+    if (!phone || !name) return;
+    const key = normalizeWhatsAppPhone(phone) + "|" + name.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    vendors.push({
+      id: expense.id,
+      kind: "vendor",
+      name,
+      phone,
+      secondary: expense.expense,
+      rsvp: "—",
+      inviteEngagement: getVendorInviteStatus(expense.id, "engagement"),
+      inviteWedding: getVendorInviteStatus(expense.id, "wedding")
+    });
+  });
+
+  return guests.concat(vendors);
+}
+
+function inviteSent(contact, cardKey) {
+  return cardKey === "engagement" ? contact.inviteEngagement === "Sent" : contact.inviteWedding === "Sent";
+}
+
+function calculateInviteStats() {
+  const contacts = listInviteContacts().filter((item) => item.kind === "guest");
+  const total = contacts.length;
+  const engagementSent = contacts.filter((item) => item.inviteEngagement === "Sent").length;
+  const weddingSent = contacts.filter((item) => item.inviteWedding === "Sent").length;
+  const rsvpDone = contacts.filter((item) => ["Confirmed", "Maybe", "Declined"].includes(item.rsvp)).length;
+  const inviteSentCount = contacts.filter((item) => item.rsvp !== "Not Invited" || item.inviteEngagement === "Sent" || item.inviteWedding === "Sent").length;
+  return {
+    total,
+    engagementSent,
+    engagementRemaining: Math.max(0, total - engagementSent),
+    weddingSent,
+    weddingRemaining: Math.max(0, total - weddingSent),
+    inviteSentCount,
+    inviteRemaining: Math.max(0, total - inviteSentCount),
+    rsvpDone,
+    rsvpPending: Math.max(0, total - rsvpDone)
+  };
+}
+
+function resolveCardUrl(cardKey) {
+  const card = INVITE_CARDS[cardKey];
+  if (!card) return Promise.resolve("");
+  if (inviteShareState.resolved[cardKey]) return Promise.resolve(inviteShareState.resolved[cardKey]);
+
+  const tryFile = (index) => new Promise((resolve) => {
+    if (index >= card.files.length) {
+      resolve("");
+      return;
+    }
+    const path = card.files[index];
+    const img = new Image();
+    img.onload = () => resolve(path);
+    img.onerror = () => tryFile(index + 1).then(resolve);
+    img.src = encodeURI(path) + (path.includes("?") ? "&" : "?") + "v=3";
+  });
+
+  return tryFile(0).then((path) => {
+    inviteShareState.resolved[cardKey] = path;
+    return path;
+  });
+}
+
+async function renderInviteCardPreview() {
+  const target = document.getElementById("invite-card-preview");
+  if (!target) return;
+  const parts = [];
+  for (const key of Object.keys(INVITE_CARDS)) {
+    const card = INVITE_CARDS[key];
+    const url = await resolveCardUrl(key);
+    parts.push(`
+      <article class="invite-preview">
+        <div class="invite-preview-art">${url ? `<img src="${escapeHtml(encodeURI(url))}" alt="${escapeHtml(card.label)} invitation card">` : `<div class="invite-missing">Add ${escapeHtml(card.label)} PNG card</div>`}</div>
+        <strong>${escapeHtml(card.label)}</strong>
+      </article>
+    `);
+  }
+  target.innerHTML = parts.join("");
+}
+
+function renderInvitations() {
+  const statsTarget = document.getElementById("invite-stats");
+  if (!statsTarget) return;
+  const stats = calculateInviteStats();
+  statsTarget.innerHTML = [
+    ["Guests", stats.total, "On invite list"],
+    ["Engagement sent", stats.engagementSent, `${stats.engagementRemaining} remaining`],
+    ["Wedding sent", stats.weddingSent, `${stats.weddingRemaining} remaining`],
+    ["RSVP in", stats.rsvpDone, `${stats.rsvpPending} awaiting reply`]
+  ].map(([label, value, note]) => `
+    <article class="stat">
+      <div class="stat-label">${escapeHtml(label)}</div>
+      <div class="stat-value">${escapeHtml(String(value))}</div>
+      <div class="stat-note">${escapeHtml(note)}</div>
+    </article>
+  `).join("");
+
+  renderInviteCardPreview();
+
+  const query = (document.getElementById("invite-search") && document.getElementById("invite-search").value || "").trim().toLowerCase();
+  const type = (document.getElementById("invite-type-filter") && document.getElementById("invite-type-filter").value) || "";
+  const card = (document.getElementById("invite-card-filter") && document.getElementById("invite-card-filter").value) || "";
+  const status = (document.getElementById("invite-status-filter") && document.getElementById("invite-status-filter").value) || "";
+  const contacts = listInviteContacts().filter((item) => {
+    const haystack = [item.name, item.phone, item.secondary, item.kind].join(" ").toLowerCase();
+    if (query && !haystack.includes(query)) return false;
+    if (type && item.kind !== type) return false;
+    if (card === "engagement" && status === "pending" && item.inviteEngagement === "Sent") return false;
+    if (card === "wedding" && status === "pending" && item.inviteWedding === "Sent") return false;
+    if (card === "engagement" && status === "sent" && item.inviteEngagement !== "Sent") return false;
+    if (card === "wedding" && status === "sent" && item.inviteWedding !== "Sent") return false;
+    if (!card && status === "pending" && item.inviteEngagement === "Sent" && item.inviteWedding === "Sent") return false;
+    if (!card && status === "sent" && item.inviteEngagement !== "Sent" && item.inviteWedding !== "Sent") return false;
+    if (status === "rsvp") {
+      if (item.kind !== "guest") return false;
+      if (!["Confirmed", "Maybe", "Declined"].includes(item.rsvp)) return false;
+    }
+    return true;
+  }).sort((a, b) => a.name.localeCompare(b.name));
+
+  document.getElementById("invite-meta").textContent = contacts.length
+    ? `${contacts.length} contacts · ${stats.engagementSent}/${stats.total} engagement · ${stats.weddingSent}/${stats.total} wedding`
+    : "";
+
+  const empty = document.getElementById("invite-empty");
+  const tableWrap = document.getElementById("invite-table-wrap");
+  const cards = document.getElementById("invite-cards");
+  if (!contacts.length) {
+    tableWrap.hidden = true;
+    cards.hidden = true;
+    empty.hidden = false;
+    empty.innerHTML = `<span class="empty-emoji">💌</span><p>No matching contacts with phone numbers yet.</p>`;
+    return;
+  }
+  empty.hidden = true;
+  tableWrap.hidden = false;
+  cards.hidden = false;
+  document.getElementById("invite-body").innerHTML = contacts.map(inviteRow).join("");
+  cards.innerHTML = contacts.map(inviteCard).join("");
+}
+
+function inviteStatusChip(status) {
+  const sent = status === "Sent";
+  return `<span class="badge badge-${sent ? "paid" : "not-booked"}">${escapeHtml(status)}</span>`;
+}
+
+function inviteRow(contact) {
+  return `
+    <tr data-id="${escapeHtml(contact.id)}">
+      <td>
+        <span class="expense-name">${escapeHtml(contact.name)}</span>
+        ${contact.secondary ? `<span class="sub">${escapeHtml(contact.secondary)}</span>` : ""}
+      </td>
+      <td>${escapeHtml(contact.kind === "guest" ? "Guest" : "Vendor")}</td>
+      <td>${formatPhone(contact.phone)}</td>
+      <td>${inviteStatusChip(contact.inviteEngagement)}</td>
+      <td>${inviteStatusChip(contact.inviteWedding)}</td>
+      <td>${contact.kind === "guest" ? rsvpBadge(contact.rsvp) : "—"}</td>
+      <td>
+        <div class="actions">
+          <button type="button" data-action="whatsapp-contact" data-kind="${escapeHtml(contact.kind)}" data-id="${escapeHtml(contact.id)}" class="btn-wa">${whatsappIcon(16)} WhatsApp</button>
+        </div>
+      </td>
+    </tr>
+  `;
+}
+
+function inviteCard(contact) {
+  return `
+    <article class="item-card" data-id="${escapeHtml(contact.id)}">
+      <div class="item-card-top">
+        <div>
+          <span class="expense-name">${escapeHtml(contact.name)}</span>
+          <span class="sub">${escapeHtml(contact.kind === "guest" ? "Guest" : "Vendor")} · ${escapeHtml(contact.phone || "No phone")}</span>
+        </div>
+        ${contact.kind === "guest" ? rsvpBadge(contact.rsvp) : ""}
+      </div>
+      <div class="metrics">
+        <div><span>Engagement</span><strong>${escapeHtml(contact.inviteEngagement)}</strong></div>
+        <div><span>Wedding</span><strong>${escapeHtml(contact.inviteWedding)}</strong></div>
+      </div>
+      <div class="actions">
+        ${whatsappButton("whatsapp-contact", { kind: contact.kind, id: contact.id })}
+      </div>
+    </article>
+  `;
+}
+
+async function openInviteShareModal(kind, id, preferredCard) {
+  let contact = null;
+  if (kind === "guest") {
+    const guest = getGuest(id);
+    if (!guest) return;
+    contact = {
+      id: guest.id,
+      kind: "guest",
+      name: guest.name,
+      phone: guest.phone || guest.phoneAlt,
+      inviteEngagement: guest.inviteEngagement,
+      inviteWedding: guest.inviteWedding
+    };
+  } else {
+    const expense = getExpense(id);
+    if (!expense) return;
+    contact = {
+      id: expense.id,
+      kind: "vendor",
+      name: expense.vendor || expense.contactPerson || expense.expense,
+      phone: expense.vendorPhone,
+      inviteEngagement: getVendorInviteStatus(expense.id, "engagement"),
+      inviteWedding: getVendorInviteStatus(expense.id, "wedding")
+    };
+  }
+
+  if (!normalizeWhatsAppPhone(contact.phone)) {
+    showToast("Add a phone number before sharing on WhatsApp");
+    return;
+  }
+
+  inviteShareState.contact = contact;
+  inviteShareState.cardKey = preferredCard || (contact.inviteEngagement === "Sent" ? "wedding" : "engagement");
+  const error = document.getElementById("invite-error");
+  if (error) error.hidden = true;
+  document.getElementById("invite-modal-title").textContent = `Share with ${contact.name}`;
+  document.getElementById("invite-modal-subtitle").textContent = `WhatsApp · ${contact.phone}`;
+  await renderInvitePickGrid();
+  document.getElementById("invite-message").value = inviteMessageFor(contact, inviteShareState.cardKey);
+  document.getElementById("invite-modal").hidden = false;
+  document.body.classList.add("modal-open");
+}
+
+async function renderInvitePickGrid() {
+  const grid = document.getElementById("invite-pick-grid");
+  const parts = [];
+  for (const key of Object.keys(INVITE_CARDS)) {
+    const card = INVITE_CARDS[key];
+    const url = await resolveCardUrl(key);
+    if (key === inviteShareState.cardKey) inviteShareState.cardUrl = url;
+    const selected = key === inviteShareState.cardKey ? "is-selected" : "";
+    parts.push(`
+      <button type="button" class="invite-pick ${selected}" data-action="pick-invite-card" data-card="${escapeHtml(key)}">
+        <span class="invite-pick-art">${url ? `<img src="${escapeHtml(encodeURI(url))}" alt="">` : "No PNG card"}</span>
+        <strong>${escapeHtml(card.label)}</strong>
+        <span class="sub">${inviteSent(inviteShareState.contact, key) ? "Already sent" : "Not sent yet"}</span>
+      </button>
+    `);
+  }
+  grid.innerHTML = parts.join("");
+}
+
+function closeInviteModal() {
+  const modal = document.getElementById("invite-modal");
+  if (!modal || modal.hidden) return;
+  modal.hidden = true;
+  if (document.getElementById("form-modal").hidden && document.getElementById("confirm-modal").hidden) {
+    const detail = document.getElementById("budget-detail");
+    if (!detail || detail.hidden) document.body.classList.remove("modal-open");
+  }
+}
+
+async function markInviteSent(contact, cardKey) {
+  if (!contact) return false;
+  if (contact.kind === "guest") {
+    const guest = getGuest(contact.id);
+    if (!guest) return false;
+    if (cardKey === "engagement") guest.inviteEngagement = "Sent";
+    else guest.inviteWedding = "Sent";
+    if (guest.rsvp === "Not Invited") guest.rsvp = "Invite Sent";
+  } else {
+    setVendorInvite(contact.id, cardKey, "Sent");
+  }
+  render();
+  return saveData();
+}
+
+async function blobToPngBlob(blob) {
+  if (blob.type === "image/png") return blob;
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    const image = await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("Could not load invitation card."));
+      img.src = objectUrl;
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = image.naturalWidth || image.width;
+    canvas.height = image.naturalHeight || image.height;
+    canvas.getContext("2d").drawImage(image, 0, 0);
+    const png = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+    if (!png) throw new Error("Could not prepare invitation card.");
+    return png;
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+async function copyInviteCardToClipboard(cardUrl) {
+  if (!cardUrl || !navigator.clipboard || !window.ClipboardItem) {
+    throw new Error("Clipboard image copy is not supported in this browser.");
+  }
+  const response = await fetch(encodeURI(cardUrl));
+  if (!response.ok) throw new Error("Could not load invitation card.");
+  const pngBlob = await blobToPngBlob(await response.blob());
+  await navigator.clipboard.write([new ClipboardItem({ "image/png": pngBlob })]);
+}
+
+function openWhatsAppTab(phone, message) {
+  const waUrl = `https://web.whatsapp.com/send?phone=${phone}&text=${encodeURIComponent(message)}`;
+  const waLink = document.createElement("a");
+  waLink.href = waUrl;
+  waLink.target = "_blank";
+  waLink.rel = "noopener noreferrer";
+  document.body.appendChild(waLink);
+  waLink.click();
+  waLink.remove();
+  return waUrl;
+}
+
+async function openWhatsAppShare() {
+  const contact = inviteShareState.contact;
+  const cardKey = inviteShareState.cardKey;
+  const error = document.getElementById("invite-error");
+  if (!contact) return;
+  const phone = normalizeWhatsAppPhone(contact.phone);
+  if (!phone) {
+    error.hidden = false;
+    error.textContent = "Valid phone number required.";
+    return;
+  }
+
+  const message = document.getElementById("invite-message").value.trim() || inviteMessageFor(contact, cardKey);
+  const cardUrl = inviteShareState.cardUrl || await resolveCardUrl(cardKey);
+  error.hidden = true;
+
+  let imageCopied = false;
+  if (cardUrl) {
+    try {
+      await copyInviteCardToClipboard(cardUrl);
+      imageCopied = true;
+    } catch (copyError) {
+      const download = document.createElement("a");
+      download.href = encodeURI(cardUrl);
+      download.download = `${cardKey}-invitation.png`;
+      document.body.appendChild(download);
+      download.click();
+      download.remove();
+    }
+  }
+
+  openWhatsAppTab(phone, message);
+  await markInviteSent(contact, cardKey);
+  closeInviteModal();
+
+  if (imageCopied) {
+    showToast("WhatsApp opened · card copied — press Ctrl+V in the chat to paste the image");
+  } else if (cardUrl) {
+    showToast("WhatsApp opened · card downloaded — attach the PNG in the chat");
+  } else {
+    showToast("WhatsApp opened · marked sent");
+  }
+}
+
+async function downloadSelectedInviteCard() {
+  const cardUrl = inviteShareState.cardUrl || await resolveCardUrl(inviteShareState.cardKey);
+  if (!cardUrl) {
+    showToast("Add the card file in the invitations folder first");
+    return;
+  }
+  const link = document.createElement("a");
+  link.href = encodeURI(cardUrl);
+  link.download = `${inviteShareState.cardKey}-invitation.png`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+function copyRsvpHomeLink() {
+  const url = rsvpPageUrl("");
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(url).then(() => showToast("RSVP page link copied")).catch(() => showToast(url));
+  } else {
+    showToast(url);
+  }
 }
 
 function switchTab(tab) {
@@ -1524,9 +2059,12 @@ function closeModal() {
   clearFormError("expense");
   clearFormError("payment");
   clearFormError("guest");
-  if (document.getElementById("confirm-modal").hidden) {
-    document.body.classList.remove("modal-open");
-    document.getElementById("app").removeAttribute("aria-hidden");
+  if (document.getElementById("confirm-modal").hidden && document.getElementById("invite-modal").hidden) {
+    const detail = document.getElementById("budget-detail");
+    if (!detail || detail.hidden) {
+      document.body.classList.remove("modal-open");
+      document.getElementById("app").removeAttribute("aria-hidden");
+    }
   }
   if (lastFocus && typeof lastFocus.focus === "function") lastFocus.focus();
 }
@@ -1881,7 +2419,13 @@ function saveGuest(event) {
     Object.assign(current, payload);
   } else {
     savedId = uid("gst");
-    state.guests.push({ id: savedId, ...payload, createdAt: new Date().toISOString() });
+    state.guests.push({
+      id: savedId,
+      ...payload,
+      inviteEngagement: "Not Sent",
+      inviteWedding: "Not Sent",
+      createdAt: new Date().toISOString()
+    });
   }
 
   closeModal();
@@ -2135,7 +2679,7 @@ function viewEventInBudget(eventName) {
 }
 
 function onClick(event) {
-  const button = event.target.closest("[data-action], [data-tab], #budget-clear, #payment-clear, #guest-clear, #budget-clear-empty, #payment-clear-empty, #guest-clear-empty, #view-pending");
+  const button = event.target.closest("[data-action], [data-tab], #budget-clear, #payment-clear, #guest-clear, #invite-clear, #budget-clear-empty, #payment-clear-empty, #guest-clear-empty, #view-pending");
   if (!button) {
     if (!event.target.closest(".settings")) toggleSettings(false);
     return;
@@ -2156,6 +2700,14 @@ function onClick(event) {
   }
   if (button.id === "guest-clear" || button.id === "guest-clear-empty") {
     clearFilters("guest");
+    return;
+  }
+  if (button.id === "invite-clear") {
+    document.getElementById("invite-search").value = "";
+    document.getElementById("invite-type-filter").value = "";
+    document.getElementById("invite-card-filter").value = "";
+    document.getElementById("invite-status-filter").value = "";
+    renderInvitations();
     return;
   }
   if (button.id === "view-pending") {
@@ -2182,6 +2734,22 @@ function onClick(event) {
   if (action === "add-guest") openGuestModal();
   if (action === "edit-guest") openGuestModal(id);
   if (action === "delete-guest") deleteGuest(id);
+  if (action === "whatsapp-guest") openInviteShareModal("guest", id);
+  if (action === "whatsapp-contact") openInviteShareModal(button.dataset.kind || "guest", id);
+  if (action === "close-invite-modal") closeInviteModal();
+  if (action === "pick-invite-card") {
+    inviteShareState.cardKey = button.dataset.card || "engagement";
+    resolveCardUrl(inviteShareState.cardKey).then((url) => {
+      inviteShareState.cardUrl = url;
+      renderInvitePickGrid();
+      if (inviteShareState.contact) {
+        document.getElementById("invite-message").value = inviteMessageFor(inviteShareState.contact, inviteShareState.cardKey);
+      }
+    });
+  }
+  if (action === "open-whatsapp-share") openWhatsAppShare();
+  if (action === "download-invite-card") downloadSelectedInviteCard();
+  if (action === "copy-rsvp-home") copyRsvpHomeLink();
   if (action === "close-modal") closeModal();
   if (action === "export") {
     toggleSettings(false);
@@ -2210,6 +2778,10 @@ function onKeydown(event) {
   if (event.key !== "Escape") return;
   if (!document.getElementById("confirm-modal").hidden) {
     closeConfirm(false);
+    return;
+  }
+  if (!document.getElementById("invite-modal").hidden) {
+    closeInviteModal();
     return;
   }
   if (!document.getElementById("form-modal").hidden) {
@@ -2252,6 +2824,10 @@ function bindEvents() {
   });
   ["guest-search", "guest-function", "guest-side-filter", "guest-rsvp-filter"].forEach((id) => {
     document.getElementById(id).addEventListener("input", renderGuests);
+  });
+  ["invite-search", "invite-type-filter", "invite-card-filter", "invite-status-filter"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("input", renderInvitations);
   });
 
   document.getElementById("confirm-cancel").addEventListener("click", () => closeConfirm(false));

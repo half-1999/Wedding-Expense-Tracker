@@ -55,6 +55,7 @@
         <button type="button" class="tab" role="tab" id="tab-budget" data-tab="budget" aria-selected="false" aria-controls="panel-budget">🧾 Budget</button>
         <button type="button" class="tab" role="tab" id="tab-payments" data-tab="payments" aria-selected="false" aria-controls="panel-payments">💸 Payments</button>
         <button type="button" class="tab" role="tab" id="tab-guests" data-tab="guests" aria-selected="false" aria-controls="panel-guests">🥂 Guests</button>
+        <button type="button" class="tab" role="tab" id="tab-invitations" data-tab="invitations" aria-selected="false" aria-controls="panel-invitations">💌 Invitations</button>
       </nav>
     </header>
 
@@ -278,6 +279,77 @@
         </div>
         <div id="guest-cards" class="card-list"></div>
         <div id="guest-empty" class="empty" hidden></div>
+      </section>
+
+      <section id="panel-invitations" class="panel" data-panel="invitations" role="tabpanel" aria-labelledby="tab-invitations" hidden>
+        <div class="panel-head">
+          <div>
+            <h2>Invitations 💌</h2>
+            <p class="hint">Share your PNG invitation cards on WhatsApp. Track sent, remaining, and RSVP. Public form: <a href="rsvp.html" target="_blank" rel="noopener">rsvp.html</a></p>
+          </div>
+          <button type="button" class="btn btn-ghost" data-action="copy-rsvp-home">Copy RSVP page link</button>
+        </div>
+
+        <div class="invite-stats" id="invite-stats"></div>
+
+        <div class="invite-cards-preview block">
+          <h3>Invitation cards</h3>
+          <p class="hint">Using <code>invitations/engagement.png</code> and <code>invitations/wedding.png</code>.</p>
+          <div class="invite-card-grid" id="invite-card-preview"></div>
+        </div>
+
+        <div class="toolbar">
+          <label class="field grow">
+            <span>Search</span>
+            <input type="search" id="invite-search" placeholder="Name, phone, vendor…" autocomplete="off">
+          </label>
+          <label class="field">
+            <span>Type</span>
+            <select id="invite-type-filter">
+              <option value="">Guests &amp; vendors</option>
+              <option value="guest">Guests only</option>
+              <option value="vendor">Vendors only</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Card</span>
+            <select id="invite-card-filter">
+              <option value="">All cards</option>
+              <option value="engagement">Engagement</option>
+              <option value="wedding">Wedding</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Status</span>
+            <select id="invite-status-filter">
+              <option value="">All</option>
+              <option value="pending">Remaining</option>
+              <option value="sent">Sent</option>
+              <option value="rsvp">RSVP received</option>
+            </select>
+          </label>
+          <button type="button" class="text-btn" id="invite-clear">Clear Filters</button>
+        </div>
+        <p class="meta" id="invite-meta"></p>
+
+        <div class="table-scroll" id="invite-table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Contact</th>
+                <th>Type</th>
+                <th>Phone</th>
+                <th>Engagement</th>
+                <th>Wedding</th>
+                <th>RSVP</th>
+                <th class="actions-col">WhatsApp</th>
+              </tr>
+            </thead>
+            <tbody id="invite-body"></tbody>
+          </table>
+        </div>
+        <div id="invite-cards" class="card-list"></div>
+        <div id="invite-empty" class="empty" hidden></div>
       </section>
     </main>
   </div>
@@ -520,6 +592,28 @@
       <div class="modal-actions">
         <button type="button" class="btn btn-ghost" id="confirm-cancel">Cancel</button>
         <button type="button" class="btn btn-danger" id="confirm-ok">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="invite-modal" hidden>
+    <div class="modal-backdrop" data-action="close-invite-modal"></div>
+    <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="invite-modal-title">
+      <div class="modal-head">
+        <h2 id="invite-modal-title">Share on WhatsApp</h2>
+        <button type="button" class="icon-btn" data-action="close-invite-modal" aria-label="Close">×</button>
+      </div>
+      <p class="hint" id="invite-modal-subtitle">Choose a card, then open WhatsApp with this contact.</p>
+      <p class="hint invite-wa-tip">WhatsApp Web cannot auto-attach images from a link. We copy the card to your clipboard — after WhatsApp opens, click the chat box and press <strong>Ctrl+V</strong> (Mac: <strong>Cmd+V</strong>) to paste the invitation card with the message.</p>
+      <div class="invite-pick-grid" id="invite-pick-grid"></div>
+      <label class="field" style="margin-top:12px">
+        <span>Message preview</span>
+        <textarea id="invite-message" rows="5"></textarea>
+      </label>
+      <p class="form-error" id="invite-error" role="alert" hidden></p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" data-action="download-invite-card">Download card</button>
+        <button type="button" class="btn btn-wa-solid" data-action="open-whatsapp-share"><svg class="wa-icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12.04 2C6.58 2 2.15 6.43 2.15 11.89c0 1.96.52 3.8 1.44 5.42L2 22l4.85-1.55a9.86 9.86 0 0 0 5.19 1.44h.01c5.46 0 9.89-4.43 9.89-9.89C21.94 6.43 17.5 2 12.04 2zm5.75 14.08c-.24.68-1.4 1.25-1.93 1.33-.49.07-1.12.1-1.81-.11-.42-.13-.96-.31-1.66-.61-2.92-1.26-4.82-4.2-4.97-4.39-.14-.19-1.18-1.57-1.18-3 0-1.42.75-2.12 1.01-2.41.27-.29.58-.36.78-.36h.56c.18 0 .42-.07.66.5.24.59.82 2.01.89 2.16.07.15.12.32.02.51-.1.2-.15.32-.3.5-.15.17-.31.39-.44.52-.15.15-.3.31-.13.6.17.29.76 1.25 1.63 2.03 1.12 1 2.07 1.31 2.36 1.46.29.15.46.12.63-.07.17-.2.73-.85.93-1.14.2-.29.39-.24.66-.15.27.1 1.72.81 2.02.96.29.15.49.22.56.34.08.13.08.74-.16 1.42z"/></svg> Open WhatsApp</button>
       </div>
     </div>
   </div>
