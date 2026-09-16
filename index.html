@@ -15,7 +15,7 @@
       <div class="header-top">
         <div class="brand">
           <h1>Wedding Expense Manager</h1>
-          <p class="subtitle">Groom Side • 2026</p>
+          <p class="subtitle">Groom Side • 2026 <span id="sync-status" class="sync-status">Sheet sync not configured</span></p>
         </div>
         <div class="settings">
           <button type="button" class="icon-btn" id="settings-btn" aria-label="Settings" aria-haspopup="menu" aria-expanded="false" aria-controls="settings-menu">
@@ -28,6 +28,8 @@
           <div id="settings-menu" class="menu" role="menu" hidden>
             <button type="button" role="menuitem" data-action="export">Export Data</button>
             <button type="button" role="menuitem" data-action="import">Import Data</button>
+            <button type="button" role="menuitem" data-action="configure-sync">Configure Sheet Sync</button>
+            <button type="button" role="menuitem" data-action="sync">Sync Now</button>
             <button type="button" role="menuitem" class="danger" data-action="clear">Clear All Data</button>
           </div>
           <input type="file" id="import-file" accept="application/json,.json" hidden>
@@ -44,7 +46,11 @@
     <main class="main">
       <section id="panel-dashboard" class="panel" data-panel="dashboard" role="tabpanel" aria-labelledby="tab-dashboard">
         <div class="panel-head">
-          <h2>Overview</h2>
+          <div>
+            <h2>Overview</h2>
+            <p class="hint" id="dashboard-meta">Live data from Google Sheets</p>
+          </div>
+          <button type="button" class="btn btn-ghost" data-action="sync" title="Refresh shared sheet data">↻ Sync</button>
         </div>
 
         <section class="block details-block" aria-labelledby="wedding-details-title">
@@ -74,6 +80,8 @@
         </section>
 
         <div id="stat-grid" class="stats"></div>
+
+        <div id="dashboard-insights" class="dashboard-insights"></div>
 
         <div class="summary-grid">
           <section class="block" aria-labelledby="function-summary-title">
@@ -518,7 +526,7 @@
 
   <div class="toasts" id="toasts" aria-live="polite" aria-atomic="true"></div>
   <noscript>
-    <p class="noscript">This app needs JavaScript. It still runs entirely in your browser — there is no account or server.</p>
+    <p class="noscript">This app needs JavaScript.</p>
   </noscript>
   <script src="script.js"></script>
 </body>

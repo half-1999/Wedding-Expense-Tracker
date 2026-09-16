@@ -1,4 +1,6 @@
-/* Wedding Expense Manager — local only, no backend. */
+/* Wedding Expense Manager — local cache with Google Sheets sync. */
+
+const SYNC_API_URL = "https://script.google.com/macros/s/AKfycbz2moL-yQeyo2WnACMt3Uaueh7ExS7FWXzEOWoR_4iI0WYE87_1ATAPa7qNBk0isRGtNw/exec";
 
 const KEYS = {
   expenses: "wedding_expenses",
@@ -25,25 +27,26 @@ const CATEGORIES = [
 
 const FUNCTIONS = [
   "Engagement",
-  "Roka",
+  "Ramayana",
   "Haldi",
   "Mehendi",
   "Sangeet",
+  "Mandap Reception",
   "Wedding",
   "Baraat",
-  "Reception",
   "Common / All Functions"
 ];
 
 const GUEST_FUNCTIONS = [
   "Engagement",
-  "Roka",
+  "Ramayana",
   "Haldi",
   "Mehendi",
   "Sangeet",
+  "Mandap Reception",
   "Wedding",
   "Baraat",
-  "Reception"
+  "Common / All Functions"  
 ];
 
 const GUEST_RELATIONS = [
@@ -67,7 +70,11 @@ const state = {
   guests: [],
   settings: { initialized: true },
   tab: "dashboard",
-  loadError: ""
+  loadError: "",
+  syncError: "",
+  syncing: false,
+  syncQueued: false,
+  syncDirty: false
 };
 
 const confirmState = { resolve: null };
@@ -113,6 +120,158 @@ function saveData() {
   } catch (err) {
     showToast("Could not save. Browser storage may be full.");
   }
+  state.syncDirty = true;
+  syncToSheet();
+}
+
+function getSyncUrl() {
+  return String(state.settings.syncApiUrl || SYNC_API_URL || "").trim();
+}
+
+function setSyncStatus(message, isError) {
+  const status = document.getElementById("sync-status");
+  if (!status) return;
+  status.textContent = message;
+  status.classList.toggle("is-error", Boolean(isError));
+}
+
+function applyRemoteData(data) {
+  if (!data || !Array.isArray(data.expenses) || !Array.isArray(data.payments)) {
+    throw new Error("The sheet returned invalid data.");
+  }
+  state.expenses = data.expenses.map(sanitizeExpense).filter(Boolean);
+  state.payments = data.payments.map(sanitizePayment).filter(Boolean);
+  state.guests = Array.isArray(data.guests) ? data.guests.map(sanitizeGuest).filter(Boolean) : [];
+  const currentSyncApiUrl = state.settings.syncApiUrl || SYNC_API_URL;
+  state.settings = {
+    initialized: true,
+    ...(data.settings && typeof data.settings === "object" ? data.settings : {})
+  };
+  if (currentSyncApiUrl) state.settings.syncApiUrl = currentSyncApiUrl;
+  localStorage.setItem(KEYS.expenses, JSON.stringify(state.expenses));
+  localStorage.setItem(KEYS.payments, JSON.stringify(state.payments));
+  localStorage.setItem(KEYS.guests, JSON.stringify(state.guests));
+  localStorage.setItem(KEYS.settings, JSON.stringify(state.settings));
+}
+
+async function syncFromSheet() {
+  const url = getSyncUrl();
+  if (!url) {
+    setSyncStatus("Sheet sync not configured", true);
+    return false;
+  }
+  if (state.syncing) {
+    state.syncQueued = true;
+    return false;
+  }
+  state.syncing = true;
+  setSyncStatus("Syncing…", false);
+  try {
+    const remote = await jsonpRequest(url);
+    const hasRemoteData = remote.expenses.length || remote.payments.length || remote.guests.length;
+    const hasLocalData = state.expenses.length || state.payments.length || state.guests.length;
+    if (state.syncDirty || (!hasRemoteData && hasLocalData)) {
+      await pushDataToSheet(url);
+      state.syncDirty = false;
+    } else if (hasRemoteData || !hasLocalData) {
+      applyRemoteData(remote);
+    }
+    state.syncError = "";
+    setSyncStatus(`Synced ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`, false);
+    render();
+    return true;
+  } catch (error) {
+    state.syncError = error.message;
+    setSyncStatus("Sheet sync unavailable", true);
+    return false;
+  } finally {
+    state.syncing = false;
+    if (state.syncQueued) {
+      state.syncQueued = false;
+      syncToSheet();
+    }
+  }
+}
+
+function jsonpRequest(url) {
+  return new Promise((resolve, reject) => {
+    const callbackName = `weddingSheetCallback${Date.now()}${Math.random().toString(36).slice(2, 7)}`;
+    const script = document.createElement("script");
+    const cleanup = () => {
+      delete window[callbackName];
+      script.remove();
+    };
+    window[callbackName] = (payload) => {
+      cleanup();
+      resolve(payload);
+    };
+    script.onerror = () => {
+      cleanup();
+      reject(new Error("Could not read the wedding sheet."));
+    };
+    script.src = `${url}${url.includes("?") ? "&" : "?"}prefix=${encodeURIComponent(callbackName)}&_=${Date.now()}`;
+    document.head.appendChild(script);
+  });
+}
+
+async function pushDataToSheet(url) {
+  await fetch(url, {
+    method: "POST",
+    mode: "no-cors",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({
+      action: "replace",
+      data: {
+        expenses: state.expenses,
+        payments: state.payments,
+        guests: state.guests,
+        settings: state.settings
+      }
+    })
+  });
+}
+
+async function syncToSheet() {
+  const url = getSyncUrl();
+  if (!url) return;
+  if (state.syncing) {
+    state.syncQueued = true;
+    return;
+  }
+  state.syncing = true;
+  setSyncStatus("Saving to sheet…", false);
+  try {
+    await pushDataToSheet(url);
+    state.syncDirty = false;
+    state.syncError = "";
+    setSyncStatus(`Synced ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`, false);
+  } catch (error) {
+    state.syncError = error.message;
+    setSyncStatus("Saved here; sheet sync failed", true);
+  } finally {
+    state.syncing = false;
+    if (state.syncQueued) {
+      state.syncQueued = false;
+      syncToSheet();
+    }
+  }
+}
+
+function configureSync() {
+  const current = getSyncUrl();
+  const url = window.prompt("Paste your deployed Google Apps Script web-app URL:", current);
+  if (url === null) return;
+  state.settings.syncApiUrl = url.trim();
+  localStorage.setItem(KEYS.settings, JSON.stringify(state.settings));
+  if (!state.settings.syncApiUrl) {
+    setSyncStatus("Sheet sync not configured", true);
+    showToast("Sheet sync disabled");
+    return;
+  }
+  syncFromSheet().then((ok) => {
+    if (ok) showToast("Connected to wedding sheet");
+    else showToast("Could not connect to the wedding sheet");
+  });
 }
 
 /* Seed */
@@ -593,27 +752,78 @@ function render(parts) {
 
 function renderDashboard() {
   const totals = calculateTotals();
+  const paidPercent = totals.totalBooked > 0 ? Math.min(100, Math.round((totals.totalPaid / totals.totalBooked) * 100)) : 0;
+  const pending = getPendingExpenses();
+  const topPending = pending[0];
   const cards = [
-    ["Total Booked", formatCurrency(totals.totalBooked), "Sum of booking values"],
-    ["Total Paid", formatCurrency(totals.totalPaid), "Advances and recorded payments"],
-    ["Total Remaining", formatCurrency(totals.totalRemaining), "Still due on bookings"],
-    ["Booked Items", String(totals.bookedCount), `${totals.unbookedCount} still unbooked`],
-    ["Fully Paid", String(totals.paidCount), "Bookings settled in full"],
-    ["Guests", String(totals.guestPeople), `${totals.guestEntries} entries · ${totals.guestConfirmed} confirmed`]
+    ["💰", "Total Booked", formatCurrency(totals.totalBooked), "Sum of booking values"],
+    ["✅", "Total Paid", formatCurrency(totals.totalPaid), `${paidPercent}% of booked budget`],
+    ["⏳", "Total Remaining", formatCurrency(totals.totalRemaining), "Still due on bookings"],
+    ["📋", "Booked Items", String(totals.bookedCount), `${totals.unbookedCount} still unbooked`],
+    ["🎉", "Fully Paid", String(totals.paidCount), "Bookings settled in full"],
+    ["👥", "Guests", String(totals.guestPeople), `${totals.guestEntries} entries · ${totals.guestConfirmed} confirmed`]
   ];
 
-  document.getElementById("stat-grid").innerHTML = cards.map(([label, value, note]) => `
+  document.getElementById("stat-grid").innerHTML = cards.map(([icon, label, value, note]) => `
     <article class="stat">
-      <div class="stat-label">${escapeHtml(label)}</div>
+      <div class="stat-label"><span class="stat-icon" aria-hidden="true">${icon}</span>${escapeHtml(label)}</div>
       <div class="stat-value">${escapeHtml(value)}</div>
       <div class="stat-note">${escapeHtml(note)}</div>
     </article>
   `).join("");
 
+  const dashboardMeta = document.getElementById("dashboard-meta");
+  dashboardMeta.textContent = state.syncError ? "Local view · sheet sync needs attention" : "Live data from Google Sheets";
+  renderDashboardInsights(totals, paidPercent, topPending);
+
   renderSummary("function-summary", summarize("function"), "Function");
   renderSummary("category-summary", summarize("category"), "Category");
   renderGuestSummary();
   renderPending();
+}
+
+function renderDashboardInsights(totals, paidPercent, topPending) {
+  const eventRows = summarize("function")
+    .filter((row) => row.booked > 0 || row.count > 0)
+    .sort((a, b) => b.remaining - a.remaining || b.booked - a.booked)
+    .slice(0, 5);
+  const eventPulse = eventRows.length
+    ? eventRows.map((row) => {
+      const percent = row.booked > 0 ? Math.min(100, Math.round((row.paid / row.booked) * 100)) : 0;
+      return `<button type="button" class="pulse-row" data-action="view-event" data-event="${escapeHtml(row.name)}">
+        <span class="pulse-name"><span class="summary-icon" aria-hidden="true">${summaryIcon(row.name, "Function")}</span>${escapeHtml(row.name)}</span>
+        <span class="pulse-track"><span style="width:${percent}%"></span></span>
+        <strong>${percent}%</strong>
+      </button>`;
+    }).join("")
+    : `<p class="empty-inline">Add bookings to see event progress.</p>`;
+
+  document.getElementById("dashboard-insights").innerHTML = `
+    <section class="block health-card" aria-labelledby="health-title">
+      <div class="block-head">
+        <h3 id="health-title">📊 Budget Health</h3>
+        <span class="health-badge">${paidPercent}% paid</span>
+      </div>
+      <div class="health-track"><span style="width:${paidPercent}%"></span></div>
+      <div class="health-meta"><span>${formatCurrency(totals.totalPaid)} paid</span><span>${formatCurrency(totals.totalRemaining)} remaining</span></div>
+      <div class="insight-grid">
+        <div><span>Largest pending</span><strong>${topPending ? escapeHtml(topPending.expense) : "Nothing pending"}</strong></div>
+        <div><span>Next amount due</span><strong>${topPending ? formatCurrency(getBookingRemaining(topPending)) : "₹0"}</strong></div>
+        <div><span>Confirmed guests</span><strong>${totals.guestConfirmed} people</strong></div>
+      </div>
+    </section>
+    <section class="block pulse-card" aria-labelledby="pulse-title">
+      <div class="block-head"><h3 id="pulse-title">🎯 Event Pulse</h3><span class="hint">Click an event to filter Budget</span></div>
+      <div class="pulse-list">${eventPulse}</div>
+    </section>
+  `;
+}
+
+function summaryIcon(name, label) {
+  const icons = label === "Category"
+    ? { Venue: "🏛️", Food: "🍽️", Decoration: "🌸", Photography: "📸", Entertainment: "🎵", Groom: "🤵", Jewellery: "💎", Gifts: "🎁", Transportation: "🚗", Accommodation: "🏨", Invitations: "💌", Rituals: "🪔", Miscellaneous: "🧾" }
+    : { Engagement: "💍", Ramayana: "📖", Haldi: "🌼", Mehendi: "🌿", Sangeet: "🎶", "Mandap Reception": "✨", Wedding: "💒", Baraat: "🐎", "Common / All Functions": "🧩" };
+  return icons[name] || "•";
 }
 
 function renderSummary(targetId, rows, label) {
@@ -628,7 +838,7 @@ function renderSummary(targetId, rows, label) {
     const empty = row.count === 0 && row.paid === 0;
     return `
       <tr class="${empty ? "is-empty" : ""}">
-        <td>${escapeHtml(row.name)}</td>
+        <td><span class="summary-icon" aria-hidden="true">${summaryIcon(row.name, label)}</span> ${escapeHtml(row.name)}</td>
         <td class="num">${formatCurrency(row.booked)}</td>
         <td class="num">${formatCurrency(row.paid)}</td>
         <td class="num">${formatCurrency(row.remaining)}</td>
@@ -1696,6 +1906,16 @@ function viewPendingInBudget() {
   renderBudget();
 }
 
+function viewEventInBudget(eventName) {
+  switchTab("budget");
+  renderBudget();
+  document.getElementById("budget-search").value = "";
+  document.getElementById("budget-function").value = eventName;
+  document.getElementById("budget-category").value = "";
+  document.getElementById("budget-status").value = "";
+  renderBudget();
+}
+
 function onClick(event) {
   const button = event.target.closest("[data-action], [data-tab], #budget-clear, #payment-clear, #guest-clear, #budget-clear-empty, #payment-clear-empty, #guest-clear-empty, #view-pending");
   if (!button) {
@@ -1745,6 +1965,15 @@ function onClick(event) {
     toggleSettings(false);
     requestImport();
   }
+  if (action === "configure-sync") {
+    toggleSettings(false);
+    configureSync();
+  }
+  if (action === "sync") {
+    toggleSettings(false);
+    syncFromSheet().then((ok) => showToast(ok ? "Data synced" : "Could not sync with the wedding sheet"));
+  }
+  if (action === "view-event") viewEventInBudget(button.dataset.event || "");
   if (action === "clear") {
     toggleSettings(false);
     clearAllData();
@@ -1818,6 +2047,8 @@ function init() {
   switchTab("dashboard");
   render();
   if (state.loadError) showToast(state.loadError);
+  syncFromSheet();
+  window.setInterval(() => syncFromSheet(), 30000);
 }
 
 init();
