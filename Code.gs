@@ -36,8 +36,20 @@ const EVENTS = [
 ];
 
 function doGet(event) {
-  const payload = { ok: true, updatedAt: new Date().toISOString(), ...readData() };
-  let callback = event && event.parameter && (event.parameter.prefix || event.parameter.callback);
+  const params = (event && event.parameter) || {};
+  let payload;
+
+  try {
+    if (params.action === "delete") {
+      payload = deleteRecord(params.type, params.id);
+    } else {
+      payload = { ok: true, updatedAt: new Date().toISOString(), ...readData() };
+    }
+  } catch (error) {
+    payload = { ok: false, error: error.message, updatedAt: new Date().toISOString() };
+  }
+
+  let callback = params.prefix || params.callback;
   if (!callback && event && event.queryString) {
     const match = event.queryString.match(/(?:^|&)(?:prefix|callback)=([^&]+)/);
     if (match) callback = decodeURIComponent(match[1]);
@@ -126,15 +138,47 @@ function ensureWeddingSettings() {
   }
 }
 
+function deleteRecord(type, id) {
+  const key = String(type || "").trim();
+  const recordId = String(id || "").trim();
+  if (!TABS[key] || key === "settings") {
+    return { ok: false, error: "Invalid delete type", updatedAt: new Date().toISOString() };
+  }
+  if (!recordId) {
+    return { ok: false, error: "Missing record id", updatedAt: new Date().toISOString() };
+  }
+
+  const sheet = ensureTab(TABS[key]);
+  if (sheet.getFilter()) sheet.getFilter().remove();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) {
+    return { ok: false, error: "Record not found", updatedAt: new Date().toISOString(), ...readData() };
+  }
+
+  const ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+  let deleted = false;
+  for (let i = ids.length - 1; i >= 0; i -= 1) {
+    if (String(ids[i][0]).trim() === recordId) {
+      sheet.deleteRow(i + 2);
+      deleted = true;
+    }
+  }
+
+  if (!deleted) {
+    return { ok: false, error: "Record not found", updatedAt: new Date().toISOString(), ...readData() };
+  }
+
+  styleTab(sheet, TABS[key]);
+  updateDashboard();
+  return { ok: true, deleted: true, type: key, id: recordId, updatedAt: new Date().toISOString(), ...readData() };
+}
+
 function replaceAll(data) {
   Object.keys(TABS).forEach((key) => {
     const tab = TABS[key];
     const sheet = ensureTab(tab);
+    if (sheet.getFilter()) sheet.getFilter().remove();
     const fields = tab.columns.map((column) => column[0]);
-    const lastRow = sheet.getLastRow();
-    if (lastRow >= 2) {
-      sheet.getRange(2, 1, lastRow - 1, fields.length).clearContent();
-    }
 
     let rows = [];
     if (key === "settings") {
@@ -147,6 +191,12 @@ function replaceAll(data) {
         return value == null ? "" : value;
       }));
     }
+
+    const lastRow = sheet.getLastRow();
+    if (lastRow >= 2) {
+      sheet.deleteRows(2, lastRow - 1);
+    }
+    ensureHeaders(sheet, tab);
 
     if (rows.length) {
       sheet.getRange(2, 1, rows.length, fields.length).setValues(rows);

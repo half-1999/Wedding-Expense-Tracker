@@ -1,6 +1,6 @@
 /* Wedding Expense Manager — Google Sheets is the only database. */
 
-const SYNC_API_URL = "https://script.google.com/macros/s/AKfycbzEddB__zWlXX6DlKtOAgg0utHvxzFKNmYNVk4iuUamHDR8gtTm4TTfANgVsQgpK3106g/exec";
+const SYNC_API_URL = "https://script.google.com/macros/s/AKfycbzrcnsA9olmS6bMcvQh0mBuoxUYfqps-jBX2BRDw8dCaSozQYjk0bt4Z3E1OOR4aFQhNg/exec";
 const LEGACY_LOCAL_KEYS = [
   "wedding_expenses",
   "wedding_payments",
@@ -158,7 +158,7 @@ function applyRemoteData(data) {
   state.ready = true;
 }
 
-function jsonpRequest(url) {
+function jsonpRequest(url, extraParams) {
   return new Promise((resolve, reject) => {
     const callbackName = `weddingSheetCallback${Date.now()}${Math.random().toString(36).slice(2, 7)}`;
     const script = document.createElement("script");
@@ -179,11 +179,22 @@ function jsonpRequest(url) {
       fn(value);
     };
     window[callbackName] = (payload) => finish(resolve, payload);
-    script.onerror = () => finish(reject, new Error("Could not read the wedding sheet."));
+    script.onerror = () => finish(reject, new Error("Could not reach the wedding sheet."));
     const timeout = window.setTimeout(() => {
       finish(reject, new Error("The wedding sheet timed out."));
-    }, 30000);
-    script.src = `${url}${url.includes("?") ? "&" : "?"}prefix=${encodeURIComponent(callbackName)}&_=${Date.now()}`;
+    }, 45000);
+
+    const params = new URLSearchParams();
+    params.set("prefix", callbackName);
+    params.set("_", String(Date.now()));
+    if (extraParams && typeof extraParams === "object") {
+      Object.keys(extraParams).forEach((key) => {
+        if (extraParams[key] != null && extraParams[key] !== "") {
+          params.set(key, String(extraParams[key]));
+        }
+      });
+    }
+    script.src = `${url}${url.includes("?") ? "&" : "?"}${params.toString()}`;
     document.head.appendChild(script);
   });
 }
@@ -191,6 +202,11 @@ function jsonpRequest(url) {
 async function postToSheet(payload) {
   const url = getSyncUrl();
   if (!url) throw new Error("Sheet API URL is missing.");
+  const expected = {
+    expenses: (payload.data && payload.data.expenses ? payload.data.expenses.length : 0),
+    payments: (payload.data && payload.data.payments ? payload.data.payments.length : 0),
+    guests: (payload.data && payload.data.guests ? payload.data.guests.length : 0)
+  };
 
   try {
     const response = await fetch(url, {
@@ -206,24 +222,49 @@ async function postToSheet(payload) {
     }
     return data;
   } catch (fetchError) {
-    // file:// / CORS fallback: fire write, then confirm with a pull
     const body = JSON.stringify(payload);
     const sent = navigator.sendBeacon(url, new Blob([body], { type: "text/plain;charset=utf-8" }));
     if (!sent) throw new Error(fetchError.message || "The wedding sheet rejected the save request.");
-    await wait(1800);
-    const remote = await jsonpRequest(url);
-    if (!remote || remote.ok === false) {
-      throw new Error("Saved to sheet, but confirmation failed.");
-    }
-    return remote;
+    return confirmSheetWrite(url, expected);
   }
+}
+
+async function confirmSheetWrite(url, expected) {
+  let last = null;
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    await wait(900 + attempt * 400);
+    last = await jsonpRequest(url);
+    if (!last || last.ok === false) continue;
+    const expenses = Array.isArray(last.expenses) ? last.expenses.length : -1;
+    const payments = Array.isArray(last.payments) ? last.payments.length : -1;
+    const guests = Array.isArray(last.guests) ? last.guests.length : -1;
+    if (expenses === expected.expenses && payments === expected.payments && guests === expected.guests) {
+      return last;
+    }
+  }
+  if (last && last.ok !== false) return last;
+  throw new Error("Saved to sheet, but confirmation failed.");
+}
+
+async function deleteOnSheet(type, id) {
+  const url = getSyncUrl();
+  if (!url) throw new Error("Sheet API URL is missing.");
+  const remote = await jsonpRequest(url, {
+    action: "delete",
+    type,
+    id
+  });
+  if (!remote || remote.ok === false) {
+    throw new Error((remote && remote.error) || "Delete failed on Google Sheet.");
+  }
+  return remote;
 }
 
 function wait(ms) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-/** Pull only — never writes to the sheet. */
+/** Pull only - never writes to the sheet. */
 async function pullFromSheet() {
   const url = getSyncUrl();
   if (!url) {
@@ -235,7 +276,7 @@ async function pullFromSheet() {
     return false;
   }
   state.busy = true;
-  setSyncStatus("Loading from sheet…", false);
+  setSyncStatus("Syncing…", false);
   try {
     const remote = await jsonpRequest(url);
     applyRemoteData(remote);
@@ -283,15 +324,16 @@ function saveData() {
 }
 
 function queueSave() {
-  saveChain = saveChain.then(runSave).catch(() => {});
-  return saveChain;
+  const run = runSave();
+  saveChain = saveChain.then(() => run, () => run);
+  return run;
 }
 
 async function runSave() {
   const url = getSyncUrl();
   if (!url) {
     setSyncStatus("Sheet API not configured", true);
-    showToast("Cannot save — sheet API URL missing");
+    showToast("Cannot save - sheet API URL missing");
     return false;
   }
   if (state.busy) {
@@ -320,6 +362,44 @@ async function runSave() {
       state.pullQueued = false;
       queueSave();
     } else if (state.pullQueued) {
+      state.pullQueued = false;
+      pullFromSheet();
+    }
+  }
+}
+
+async function mutateDelete(type, id, successMessage) {
+  const url = getSyncUrl();
+  if (!url) {
+    showToast("Sheet API URL missing");
+    return false;
+  }
+  if (state.busy) {
+    showToast("Please wait - sync in progress");
+    return false;
+  }
+
+  state.busy = true;
+  state.pendingWrite = true;
+  setSyncStatus("Deleting…", false);
+  try {
+    const remote = await deleteOnSheet(type, id);
+    applyRemoteData(remote);
+    state.syncError = "";
+    setSyncStatus(`Live · ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`, false);
+    render();
+    showToast(successMessage);
+    return true;
+  } catch (error) {
+    state.syncError = error.message;
+    setSyncStatus("Delete failed", true);
+    showToast(error.message || "Could not delete on Google Sheet");
+    await pullFromSheet();
+    return false;
+  } finally {
+    state.pendingWrite = false;
+    state.busy = false;
+    if (state.pullQueued) {
       state.pullQueued = false;
       pullFromSheet();
     }
@@ -1681,11 +1761,7 @@ async function deleteExpense(id) {
     confirmLabel
   });
   if (!ok) return;
-  state.pendingWrite = true;
-  state.expenses = state.expenses.filter((item) => item.id !== id);
-  render();
-  const saved = await saveData();
-  if (saved) showToast("Expense deleted");
+  await mutateDelete("expenses", id, "Expense deleted");
 }
 
 async function deletePayment(id) {
@@ -1699,11 +1775,7 @@ async function deletePayment(id) {
     confirmLabel: "Delete"
   });
   if (!ok) return;
-  state.pendingWrite = true;
-  state.payments = state.payments.filter((item) => item.id !== id);
-  render();
-  const saved = await saveData();
-  if (saved) showToast("Payment deleted");
+  await mutateDelete("payments", id, "Payment deleted");
 }
 
 async function deleteGuest(id) {
@@ -1716,11 +1788,7 @@ async function deleteGuest(id) {
     confirmLabel: "Delete"
   });
   if (!ok) return;
-  state.pendingWrite = true;
-  state.guests = state.guests.filter((item) => item.id !== id);
-  render();
-  const saved = await saveData();
-  if (saved) showToast("Guest deleted");
+  await mutateDelete("guests", id, "Guest deleted");
 }
 
 function exportData() {
@@ -1988,7 +2056,11 @@ function init() {
   pullFromSheet().then((ok) => {
     if (!ok) showToast("Could not load Google Sheet data");
   });
-  window.setInterval(() => pullFromSheet(), 30000);
+  window.setInterval(() => {
+    if (document.hidden) return;
+    if (state.busy || state.pendingWrite) return;
+    pullFromSheet();
+  }, 8000);
 }
 
 init();
