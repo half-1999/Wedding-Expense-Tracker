@@ -224,21 +224,21 @@ function jsonpRequest(url) {
   });
 }
 
-async function pushDataToSheet(url) {
-  await fetch(url, {
-    method: "POST",
-    mode: "no-cors",
-    headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify({
-      action: "replace",
-      data: {
-        expenses: state.expenses,
-        payments: state.payments,
-        guests: state.guests,
-        settings: state.settings
-      }
-    })
+function pushDataToSheet(url) {
+  const payload = JSON.stringify({
+    action: "replace",
+    data: {
+      expenses: state.expenses,
+      payments: state.payments,
+      guests: state.guests,
+      settings: state.settings
+    }
   });
+  const sent = navigator.sendBeacon(
+    url,
+    new Blob([payload], { type: "text/plain;charset=utf-8" })
+  );
+  if (!sent) throw new Error("The wedding sheet rejected the save request.");
 }
 
 async function syncToSheet() {
