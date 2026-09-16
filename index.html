@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#f6f3ee">
+  <title>Wedding Expense Manager</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect fill='%231c2430' width='32' height='32' rx='6'/%3E%3Cpath d='M8 22 V10 h3.2 l4.8 8.2 L20.8 10 H24 v12 h-2.6 v-7.6 L17.2 22 h-2.4 l-4.2-7.6 V22z' fill='%23c4a46a'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app" id="app">
+    <header class="header">
+      <div class="header-top">
+        <div class="brand">
+          <h1>Wedding Expense Manager</h1>
+          <p class="subtitle">Groom Side • 2026</p>
+        </div>
+        <div class="settings">
+          <button type="button" class="icon-btn" id="settings-btn" aria-label="Settings" aria-haspopup="menu" aria-expanded="false" aria-controls="settings-menu">
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+              <circle cx="12" cy="5" r="1.7" fill="currentColor"></circle>
+              <circle cx="12" cy="12" r="1.7" fill="currentColor"></circle>
+              <circle cx="12" cy="19" r="1.7" fill="currentColor"></circle>
+            </svg>
+          </button>
+          <div id="settings-menu" class="menu" role="menu" hidden>
+            <button type="button" role="menuitem" data-action="export">Export Data</button>
+            <button type="button" role="menuitem" data-action="import">Import Data</button>
+            <button type="button" role="menuitem" class="danger" data-action="clear">Clear All Data</button>
+          </div>
+          <input type="file" id="import-file" accept="application/json,.json" hidden>
+        </div>
+      </div>
+      <nav class="tabs" role="tablist" aria-label="Sections">
+        <button type="button" class="tab is-active" role="tab" id="tab-dashboard" data-tab="dashboard" aria-selected="true" aria-controls="panel-dashboard">Dashboard</button>
+        <button type="button" class="tab" role="tab" id="tab-budget" data-tab="budget" aria-selected="false" aria-controls="panel-budget">Budget</button>
+        <button type="button" class="tab" role="tab" id="tab-payments" data-tab="payments" aria-selected="false" aria-controls="panel-payments">Payments</button>
+        <button type="button" class="tab" role="tab" id="tab-guests" data-tab="guests" aria-selected="false" aria-controls="panel-guests">Guests</button>
+      </nav>
+    </header>
+
+    <main class="main">
+      <section id="panel-dashboard" class="panel" data-panel="dashboard" role="tabpanel" aria-labelledby="tab-dashboard">
+        <div class="panel-head">
+          <h2>Overview</h2>
+        </div>
+
+        <section class="block details-block" aria-labelledby="wedding-details-title">
+          <h3 id="wedding-details-title">Wedding Details</h3>
+          <dl class="details">
+            <div>
+              <dt>Engagement</dt>
+              <dd>21 Oct 2026</dd>
+            </div>
+            <div>
+              <dt>Wedding</dt>
+              <dd>25 Nov 2026</dd>
+            </div>
+            <div>
+              <dt>Other Functions</dt>
+              <dd>22, 23 &amp; 24 Nov 2026</dd>
+            </div>
+            <div>
+              <dt>Expected Guests</dt>
+              <dd>250–300</dd>
+            </div>
+            <div>
+              <dt>Side</dt>
+              <dd>Groom</dd>
+            </div>
+          </dl>
+        </section>
+
+        <div id="stat-grid" class="stats"></div>
+
+        <div class="summary-grid">
+          <section class="block" aria-labelledby="function-summary-title">
+            <h3 id="function-summary-title">Function Summary</h3>
+            <div id="function-summary"></div>
+          </section>
+          <section class="block" aria-labelledby="category-summary-title">
+            <h3 id="category-summary-title">Category Summary</h3>
+            <div id="category-summary"></div>
+          </section>
+        </div>
+
+        <div class="summary-grid">
+          <section class="block" aria-labelledby="guest-summary-title">
+            <h3 id="guest-summary-title">Guest Summary</h3>
+            <div id="guest-summary"></div>
+          </section>
+          <section class="block" aria-labelledby="pending-title">
+            <div class="block-head">
+              <h3 id="pending-title">Pending Payments</h3>
+              <button type="button" class="text-btn" id="view-pending" hidden>View all</button>
+            </div>
+            <div id="pending-list"></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="panel-budget" class="panel" data-panel="budget" role="tabpanel" aria-labelledby="tab-budget" hidden>
+        <div class="panel-head">
+          <div>
+            <h2>Budget &amp; Bookings</h2>
+            <p class="hint">Remaining = booking value − (advance + later payments). Track vendor, phone, and remarks with each booking.</p>
+          </div>
+          <button type="button" class="btn btn-primary" data-action="add-expense">Add Expense</button>
+        </div>
+
+        <div class="toolbar">
+          <label class="field grow">
+            <span>Search</span>
+            <input type="search" id="budget-search" placeholder="Expense, vendor, category, function, remark" autocomplete="off">
+          </label>
+          <label class="field">
+            <span>Function</span>
+            <select id="budget-function"></select>
+          </label>
+          <label class="field">
+            <span>Category</span>
+            <select id="budget-category"></select>
+          </label>
+          <label class="field">
+            <span>Status</span>
+            <select id="budget-status">
+              <option value="">All statuses</option>
+              <option value="not-booked">Not Booked</option>
+              <option value="advance">Advance Paid</option>
+              <option value="paid">Fully Paid</option>
+            </select>
+          </label>
+          <button type="button" class="text-btn" id="budget-clear">Clear Filters</button>
+        </div>
+        <p class="meta" id="budget-meta"></p>
+
+        <div class="table-scroll" id="budget-table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Expense</th>
+                <th>Vendor</th>
+                <th>Category</th>
+                <th>Function</th>
+                <th class="num">Booking Value</th>
+                <th class="num">Advance Paid</th>
+                <th class="num">Remaining</th>
+                <th>Status</th>
+                <th>Remark</th>
+                <th class="actions-col">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="budget-body"></tbody>
+          </table>
+        </div>
+        <div id="budget-cards" class="card-list"></div>
+        <div id="budget-empty" class="empty" hidden></div>
+      </section>
+
+      <section id="panel-payments" class="panel" data-panel="payments" role="tabpanel" aria-labelledby="tab-payments" hidden>
+        <div class="panel-head">
+          <div>
+            <h2>Payments</h2>
+            <p class="hint">Each payment is its own record. Advances saved on an expense are already included in totals — do not enter them again here.</p>
+          </div>
+          <button type="button" class="btn btn-primary" data-action="add-payment">Add Payment</button>
+        </div>
+
+        <div class="toolbar">
+          <label class="field grow">
+            <span>Search</span>
+            <input type="search" id="payment-search" placeholder="Expense, vendor, reference, notes" autocomplete="off">
+          </label>
+          <label class="field">
+            <span>Function</span>
+            <select id="payment-function"></select>
+          </label>
+          <label class="field">
+            <span>Category</span>
+            <select id="payment-category"></select>
+          </label>
+          <button type="button" class="text-btn" id="payment-clear">Clear Filters</button>
+        </div>
+        <p class="meta" id="payment-meta"></p>
+
+        <div class="table-scroll" id="payment-table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Expense</th>
+                <th>Function</th>
+                <th>Vendor / Person</th>
+                <th class="num">Amount</th>
+                <th>Payment Mode</th>
+                <th>Reference</th>
+                <th>Notes</th>
+                <th class="actions-col">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="payment-body"></tbody>
+          </table>
+        </div>
+        <div id="payment-cards" class="card-list"></div>
+        <div id="payment-empty" class="empty" hidden></div>
+      </section>
+
+      <section id="panel-guests" class="panel" data-panel="guests" role="tabpanel" aria-labelledby="tab-guests" hidden>
+        <div class="panel-head">
+          <div>
+            <h2>Guests</h2>
+            <p class="hint">Track invitees with phone numbers, function type, side, RSVP, and stay or travel needs. No budget fields here.</p>
+          </div>
+          <button type="button" class="btn btn-primary" data-action="add-guest">Add Guest</button>
+        </div>
+
+        <div class="toolbar toolbar-guests">
+          <label class="field grow">
+            <span>Search</span>
+            <input type="search" id="guest-search" placeholder="Name, phone, city, relation, remark" autocomplete="off">
+          </label>
+          <label class="field">
+            <span>Function</span>
+            <select id="guest-function"></select>
+          </label>
+          <label class="field">
+            <span>Side</span>
+            <select id="guest-side-filter">
+              <option value="">All sides</option>
+              <option value="Groom">Groom</option>
+              <option value="Bride">Bride</option>
+              <option value="Common">Common</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>RSVP</span>
+            <select id="guest-rsvp-filter">
+              <option value="">All RSVP</option>
+              <option value="Not Invited">Not Invited</option>
+              <option value="Invite Sent">Invite Sent</option>
+              <option value="Confirmed">Confirmed</option>
+              <option value="Maybe">Maybe</option>
+              <option value="Declined">Declined</option>
+            </select>
+          </label>
+          <button type="button" class="text-btn" id="guest-clear">Clear Filters</button>
+        </div>
+        <p class="meta" id="guest-meta"></p>
+
+        <div class="table-scroll" id="guest-table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Guest</th>
+                <th>Phone</th>
+                <th>Function</th>
+                <th>Side</th>
+                <th>Relation</th>
+                <th class="num">People</th>
+                <th>RSVP</th>
+                <th>Stay / Travel</th>
+                <th>Remark</th>
+                <th class="actions-col">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="guest-body"></tbody>
+          </table>
+        </div>
+        <div id="guest-cards" class="card-list"></div>
+        <div id="guest-empty" class="empty" hidden></div>
+      </section>
+    </main>
+  </div>
+
+  <div class="modal" id="form-modal" hidden>
+    <div class="modal-backdrop" data-action="close-modal"></div>
+    <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="form-modal-title">
+      <form id="expense-form" novalidate>
+        <div class="modal-head">
+          <h2 id="expense-modal-title">Add Expense</h2>
+          <button type="button" class="icon-btn" data-action="close-modal" aria-label="Close">×</button>
+        </div>
+        <p class="form-error" id="expense-error" role="alert" hidden></p>
+        <div class="form-grid">
+          <label class="field">
+            <span>Expense Name</span>
+            <input type="text" id="expense-name" name="expense" required autocomplete="off">
+          </label>
+          <div class="split">
+            <label class="field">
+              <span>Category</span>
+              <select id="expense-category" name="category"></select>
+            </label>
+            <label class="field" id="expense-category-custom-wrap" hidden>
+              <span>Custom Category</span>
+              <input type="text" id="expense-category-custom" autocomplete="off">
+            </label>
+          </div>
+          <div class="split">
+            <label class="field">
+              <span>Function</span>
+              <select id="expense-function" name="function"></select>
+            </label>
+            <label class="field" id="expense-function-custom-wrap" hidden>
+              <span>Custom Function</span>
+              <input type="text" id="expense-function-custom" autocomplete="off">
+            </label>
+          </div>
+          <div class="split">
+            <label class="field">
+              <span>Vendor</span>
+              <input type="text" id="expense-vendor" name="vendor" placeholder="Shop / company / person" autocomplete="off">
+            </label>
+            <label class="field">
+              <span>Vendor Phone</span>
+              <input type="tel" id="expense-vendor-phone" name="vendorPhone" placeholder="10-digit number" autocomplete="off">
+            </label>
+          </div>
+          <label class="field">
+            <span>Contact Person</span>
+            <input type="text" id="expense-contact" name="contactPerson" autocomplete="off">
+          </label>
+          <div class="split amounts two">
+            <label class="field">
+              <span>Booking Value</span>
+              <span class="amount-input">
+                <span aria-hidden="true">₹</span>
+                <input type="text" inputmode="decimal" id="expense-booking" name="bookingValue" placeholder="0" autocomplete="off">
+              </span>
+            </label>
+            <label class="field">
+              <span>Advance Paid</span>
+              <span class="amount-input">
+                <span aria-hidden="true">₹</span>
+                <input type="text" inputmode="decimal" id="expense-advance" name="advancePaid" placeholder="0" autocomplete="off">
+              </span>
+            </label>
+          </div>
+          <p class="hint">Remaining updates automatically. Advance is included in total paid — record later payments in the Payments tab.</p>
+          <label class="field">
+            <span>Remark</span>
+            <textarea id="expense-notes" name="notes" rows="3" placeholder="Package details, delivery date, inclusions, pending work…"></textarea>
+          </label>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" data-action="close-modal">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save Expense</button>
+        </div>
+      </form>
+
+      <form id="payment-form" novalidate hidden>
+        <div class="modal-head">
+          <h2 id="payment-modal-title">Add Payment</h2>
+          <button type="button" class="icon-btn" data-action="close-modal" aria-label="Close">×</button>
+        </div>
+        <p class="form-error" id="payment-error" role="alert" hidden></p>
+        <div class="form-grid">
+          <div class="split">
+            <label class="field">
+              <span>Date</span>
+              <input type="date" id="payment-date" name="date" required>
+            </label>
+            <label class="field">
+              <span>Amount</span>
+              <span class="amount-input">
+                <span aria-hidden="true">₹</span>
+                <input type="text" inputmode="decimal" id="payment-amount" name="amount" placeholder="0" autocomplete="off" required>
+              </span>
+            </label>
+          </div>
+          <label class="field">
+            <span>Expense</span>
+            <select id="payment-expense" name="expenseId" required></select>
+          </label>
+          <div class="split">
+            <label class="field">
+              <span>Payment Mode</span>
+              <select id="payment-mode" name="mode"></select>
+            </label>
+            <label class="field">
+              <span>Vendor / Person</span>
+              <input type="text" id="payment-vendor" name="vendor" autocomplete="off">
+            </label>
+          </div>
+          <label class="field">
+            <span>Reference</span>
+            <input type="text" id="payment-reference" name="reference" autocomplete="off">
+          </label>
+          <label class="field">
+            <span>Notes</span>
+            <textarea id="payment-notes" name="notes" rows="3"></textarea>
+          </label>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" data-action="close-modal">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save Payment</button>
+        </div>
+      </form>
+
+      <form id="guest-form" novalidate hidden>
+        <div class="modal-head">
+          <h2 id="guest-modal-title">Add Guest</h2>
+          <button type="button" class="icon-btn" data-action="close-modal" aria-label="Close">×</button>
+        </div>
+        <p class="form-error" id="guest-error" role="alert" hidden></p>
+        <div class="form-grid">
+          <label class="field">
+            <span>Guest Name</span>
+            <input type="text" id="guest-name" name="name" required autocomplete="off">
+          </label>
+          <div class="split">
+            <label class="field">
+              <span>Phone</span>
+              <input type="tel" id="guest-phone" name="phone" placeholder="10-digit number" autocomplete="off">
+            </label>
+            <label class="field">
+              <span>Alternate Phone</span>
+              <input type="tel" id="guest-phone-alt" name="phoneAlt" autocomplete="off">
+            </label>
+          </div>
+          <fieldset class="field check-set">
+            <legend>Function Type</legend>
+            <div class="check-grid" id="guest-functions"></div>
+          </fieldset>
+          <div class="split">
+            <label class="field">
+              <span>Side</span>
+              <select id="guest-side">
+                <option value="Groom">Groom</option>
+                <option value="Bride">Bride</option>
+                <option value="Common">Common</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Relation</span>
+              <select id="guest-relation"></select>
+            </label>
+          </div>
+          <div class="split">
+            <label class="field">
+              <span>City / Place</span>
+              <input type="text" id="guest-city" name="city" autocomplete="off">
+            </label>
+            <label class="field">
+              <span>RSVP</span>
+              <select id="guest-rsvp">
+                <option value="Not Invited">Not Invited</option>
+                <option value="Invite Sent">Invite Sent</option>
+                <option value="Confirmed">Confirmed</option>
+                <option value="Maybe">Maybe</option>
+                <option value="Declined">Declined</option>
+              </select>
+            </label>
+          </div>
+          <div class="split amounts three">
+            <label class="field">
+              <span>Adults</span>
+              <input type="number" id="guest-adults" min="0" step="1" value="1">
+            </label>
+            <label class="field">
+              <span>Children</span>
+              <input type="number" id="guest-children" min="0" step="1" value="0">
+            </label>
+            <label class="field">
+              <span>Total People</span>
+              <input type="text" id="guest-people-preview" value="1" readonly>
+            </label>
+          </div>
+          <div class="split">
+            <label class="field">
+              <span>Accommodation</span>
+              <select id="guest-stay">
+                <option value="No">No</option>
+                <option value="Yes">Yes</option>
+                <option value="Maybe">Maybe</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Transport</span>
+              <select id="guest-travel">
+                <option value="No">No</option>
+                <option value="Yes">Yes</option>
+                <option value="Pickup Needed">Pickup Needed</option>
+              </select>
+            </label>
+          </div>
+          <label class="field">
+            <span>Address</span>
+            <input type="text" id="guest-address" name="address" autocomplete="off">
+          </label>
+          <label class="field">
+            <span>Remark</span>
+            <textarea id="guest-notes" name="notes" rows="3" placeholder="Family details, gift notes, special requests…"></textarea>
+          </label>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" data-action="close-modal">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save Guest</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal" id="confirm-modal" hidden>
+    <div class="modal-backdrop" data-action="confirm-cancel"></div>
+    <div class="modal-dialog confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+      <h2 id="confirm-title">Confirm</h2>
+      <p id="confirm-message"></p>
+      <p id="confirm-detail" class="hint" hidden></p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" id="confirm-cancel">Cancel</button>
+        <button type="button" class="btn btn-danger" id="confirm-ok">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toasts" id="toasts" aria-live="polite" aria-atomic="true"></div>
+  <noscript>
+    <p class="noscript">This app needs JavaScript. It still runs entirely in your browser — there is no account or server.</p>
+  </noscript>
+  <script src="script.js"></script>
+</body>
+</html>
