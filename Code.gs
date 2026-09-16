@@ -35,6 +35,9 @@ const EVENTS = [
   ["Engagement / Wedding", "", "Shared", "Planned", "Legacy combined event"]
 ];
 
+var SS_CACHE = null;
+var SHEET_CACHE = {};
+
 function doGet(event) {
   const params = (event && event.parameter) || {};
   let payload;
@@ -42,8 +45,19 @@ function doGet(event) {
   try {
     if (params.action === "delete") {
       payload = deleteRecord(params.type, params.id);
+    } else if (params.action === "ping") {
+      payload = { ok: true, updatedAt: getUpdatedAt(), ping: true };
     } else {
-      payload = { ok: true, updatedAt: new Date().toISOString(), ...readData() };
+      const current = getUpdatedAt();
+      if (params.since && String(params.since) === String(current)) {
+        payload = { ok: true, unchanged: true, updatedAt: current };
+      } else {
+        payload = { ok: true, updatedAt: current || new Date().toISOString(), ...readDataFast() };
+        if (!payload.settings) payload.settings = { initialized: true };
+        if (!payload.updatedAt || payload.updatedAt === "false") {
+          payload.updatedAt = bumpUpdatedAt(false);
+        }
+      }
     }
   } catch (error) {
     payload = { ok: false, error: error.message, updatedAt: new Date().toISOString() };
@@ -64,12 +78,33 @@ function doPost(event) {
   try {
     const body = JSON.parse((event.postData && event.postData.contents) || "{}");
     if (body.action === "replace") {
-      replaceAll(body.data || {});
-      return jsonResponse({ ok: true, updatedAt: new Date().toISOString(), ...readData() });
+      const data = normalizePayload(body.data || {});
+      const updatedAt = replaceAll(data);
+      return jsonResponse({
+        ok: true,
+        updatedAt: updatedAt,
+        expenses: data.expenses,
+        payments: data.payments,
+        guests: data.guests,
+        settings: data.settings
+      });
     }
     if (body.action === "clear") {
-      replaceAll({ expenses: [], payments: [], guests: [], settings: { initialized: true, clearedAt: new Date().toISOString() } });
-      return jsonResponse({ ok: true, updatedAt: new Date().toISOString(), ...readData() });
+      const data = {
+        expenses: [],
+        payments: [],
+        guests: [],
+        settings: { initialized: true, clearedAt: new Date().toISOString() }
+      };
+      const updatedAt = replaceAll(data);
+      return jsonResponse({
+        ok: true,
+        updatedAt: updatedAt,
+        expenses: [],
+        payments: [],
+        guests: [],
+        settings: data.settings
+      });
     }
     return jsonResponse({ ok: false, error: "Unsupported action" });
   } catch (error) {
@@ -77,13 +112,31 @@ function doPost(event) {
   }
 }
 
-function getSheet() {
-  return SpreadsheetApp.openById(SPREADSHEET_ID);
+function normalizePayload(raw) {
+  return {
+    expenses: Array.isArray(raw.expenses) ? raw.expenses : [],
+    payments: Array.isArray(raw.payments) ? raw.payments : [],
+    guests: Array.isArray(raw.guests) ? raw.guests : [],
+    settings: raw.settings && typeof raw.settings === "object" ? Object.assign({ initialized: true }, raw.settings) : { initialized: true }
+  };
+}
+
+function getSpreadsheet() {
+  if (!SS_CACHE) SS_CACHE = SpreadsheetApp.openById(SPREADSHEET_ID);
+  return SS_CACHE;
+}
+
+function getSheetByName(name, createIfMissing) {
+  if (SHEET_CACHE[name]) return SHEET_CACHE[name];
+  const spreadsheet = getSpreadsheet();
+  let sheet = spreadsheet.getSheetByName(name);
+  if (!sheet && createIfMissing) sheet = spreadsheet.insertSheet(name);
+  if (sheet) SHEET_CACHE[name] = sheet;
+  return sheet;
 }
 
 function ensureTab(tab) {
-  const spreadsheet = getSheet();
-  const sheet = spreadsheet.getSheetByName(tab.name) || spreadsheet.insertSheet(tab.name);
+  const sheet = getSheetByName(tab.name, true);
   ensureHeaders(sheet, tab);
   return sheet;
 }
@@ -92,17 +145,11 @@ function ensureHeaders(sheet, tab) {
   const headers = tab.columns.map((column) => column[1]);
   if (sheet.getLastRow() === 0) {
     sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-    return;
-  }
-  const current = sheet.getRange(1, 1, 1, headers.length).getValues()[0];
-  if (headers.some((header, index) => current[index] !== header)) {
-    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
   }
 }
 
-function readData() {
-  Object.keys(TABS).forEach((key) => ensureTab(TABS[key]));
-  ensureWeddingSettings();
+/** Fast read path used by website sync. No styling / dashboard rebuild. */
+function readDataFast() {
   const result = readTabs();
   if (result.expenses.length || result.payments.length || result.guests.length) return result;
 
@@ -114,28 +161,34 @@ function readData() {
   return result;
 }
 
-function ensureWeddingSettings() {
+function getUpdatedAt() {
+  const sheet = getSheetByName(TABS.settings.name, false);
+  if (!sheet || sheet.getLastRow() < 2) return "";
+  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 2).getValues();
+  for (let i = 0; i < rows.length; i += 1) {
+    if (String(rows[i][0]).trim() === "updatedAt") return String(rows[i][1] || "");
+  }
+  return "";
+}
+
+function bumpUpdatedAt(writeNow) {
+  const stamp = new Date().toISOString();
+  if (writeNow === false) return stamp;
   const sheet = ensureTab(TABS.settings);
-  const defaults = [
-    ["coupleNames", "Groom & Bride"],
-    ["side", "Groom"],
-    ["engagementDate", "21 Oct 2026"],
-    ["weddingDate", "25 Nov 2026"],
-    ["otherFunctions", "22, 23 & 24 Nov 2026"],
-    ["expectedGuests", "250-300"],
-    ["theme", "Floral Rose"]
-  ];
-  if (sheet.getLastRow() < 2) {
-    sheet.getRange(2, 1, defaults.length, 2).setValues(defaults);
-    styleTab(sheet, TABS.settings);
-    return;
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) {
+    sheet.getRange(2, 1, 1, 2).setValues([["updatedAt", stamp]]);
+    return stamp;
   }
-  const existing = sheet.getRange(2, 1, sheet.getLastRow() - 1, 1).getValues().flat().map(String);
-  const missing = defaults.filter((row) => !existing.includes(row[0]));
-  if (missing.length) {
-    sheet.getRange(sheet.getLastRow() + 1, 1, missing.length, 2).setValues(missing);
-    styleTab(sheet, TABS.settings);
+  const keys = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+  for (let i = 0; i < keys.length; i += 1) {
+    if (String(keys[i][0]).trim() === "updatedAt") {
+      sheet.getRange(i + 2, 2).setValue(stamp);
+      return stamp;
+    }
   }
+  sheet.getRange(lastRow + 1, 1, 1, 2).setValues([["updatedAt", stamp]]);
+  return stamp;
 }
 
 function deleteRecord(type, id) {
@@ -148,11 +201,10 @@ function deleteRecord(type, id) {
     return { ok: false, error: "Missing record id", updatedAt: new Date().toISOString() };
   }
 
-  const sheet = ensureTab(TABS[key]);
-  if (sheet.getFilter()) sheet.getFilter().remove();
+  const sheet = getSheetByName(TABS[key].name, true);
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) {
-    return { ok: false, error: "Record not found", updatedAt: new Date().toISOString(), ...readData() };
+    return { ok: false, error: "Record not found", updatedAt: getUpdatedAt(), ...readDataFast() };
   }
 
   const ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
@@ -161,28 +213,30 @@ function deleteRecord(type, id) {
     if (String(ids[i][0]).trim() === recordId) {
       sheet.deleteRow(i + 2);
       deleted = true;
+      break;
     }
   }
 
   if (!deleted) {
-    return { ok: false, error: "Record not found", updatedAt: new Date().toISOString(), ...readData() };
+    return { ok: false, error: "Record not found", updatedAt: getUpdatedAt(), ...readDataFast() };
   }
 
-  styleTab(sheet, TABS[key]);
-  updateDashboard();
-  return { ok: true, deleted: true, type: key, id: recordId, updatedAt: new Date().toISOString(), ...readData() };
+  const updatedAt = bumpUpdatedAt(true);
+  return { ok: true, deleted: true, type: key, id: recordId, updatedAt: updatedAt };
 }
 
 function replaceAll(data) {
+  const stamp = new Date().toISOString();
   Object.keys(TABS).forEach((key) => {
     const tab = TABS[key];
     const sheet = ensureTab(tab);
-    if (sheet.getFilter()) sheet.getFilter().remove();
     const fields = tab.columns.map((column) => column[0]);
 
     let rows = [];
     if (key === "settings") {
-      const settings = data.settings && typeof data.settings === "object" ? data.settings : { initialized: true };
+      const settings = data.settings && typeof data.settings === "object" ? Object.assign({}, data.settings) : { initialized: true };
+      settings.updatedAt = stamp;
+      data.settings = settings;
       rows = Object.keys(settings).map((name) => [name, String(settings[name])]);
     } else {
       rows = (data[key] || []).map((item) => fields.map((field) => {
@@ -193,25 +247,30 @@ function replaceAll(data) {
     }
 
     const lastRow = sheet.getLastRow();
+    const lastCol = Math.max(sheet.getLastColumn(), fields.length);
     if (lastRow >= 2) {
-      sheet.deleteRows(2, lastRow - 1);
+      sheet.getRange(2, 1, lastRow - 1, lastCol).clearContent();
     }
-    ensureHeaders(sheet, tab);
 
     if (rows.length) {
       sheet.getRange(2, 1, rows.length, fields.length).setValues(rows);
+      const leftover = lastRow - 1 - rows.length;
+      if (leftover > 0) {
+        sheet.deleteRows(rows.length + 2, leftover);
+      }
+    } else if (lastRow >= 2) {
+      sheet.deleteRows(2, lastRow - 1);
+      ensureHeaders(sheet, tab);
     }
-    styleTab(sheet, tab);
   });
-  ensureEventsTab();
-  updateDashboard();
+  return stamp;
 }
 
 function readTabs() {
   const result = { expenses: [], payments: [], guests: [], settings: { initialized: true } };
   Object.keys(TABS).forEach((key) => {
     const tab = TABS[key];
-    const sheet = getSheet().getSheetByName(tab.name);
+    const sheet = getSheetByName(tab.name, false);
     if (!sheet) return;
     const lastRow = sheet.getLastRow();
     if (lastRow < 2) return;
@@ -219,9 +278,13 @@ function readTabs() {
     const rows = sheet.getRange(2, 1, lastRow - 1, fields.length).getValues();
     rows.forEach((row) => {
       const item = {};
-      fields.forEach((field, index) => {
-        item[field] = row[index];
-      });
+      let allEmpty = true;
+      for (let index = 0; index < fields.length; index += 1) {
+        const value = row[index];
+        item[fields[index]] = value;
+        if (value !== "" && value != null) allEmpty = false;
+      }
+      if (allEmpty) return;
       if (key === "settings") {
         const settingKey = String(item.key || "").trim();
         if (settingKey) result.settings[settingKey] = item.value;
@@ -230,12 +293,46 @@ function readTabs() {
       if (key === "guests") {
         item.functions = String(item.functions || "").split(/\s*\|\s*/).filter(Boolean);
       }
-      const empty = fields.every((field) => item[field] === "" || item[field] == null);
-      if (empty) return;
       result[key].push(item);
     });
   });
   return result;
+}
+
+/** One-time / manual beautify. Not used on sync path. */
+function setupWorkbook() {
+  Object.keys(TABS).forEach((key) => {
+    const tab = TABS[key];
+    const sheet = ensureTab(tab);
+    styleTab(sheet, tab);
+  });
+  ensureEventsTab();
+  ensureWeddingSettings();
+  updateDashboard();
+  bumpUpdatedAt(true);
+}
+
+function ensureWeddingSettings() {
+  const sheet = ensureTab(TABS.settings);
+  const defaults = [
+    ["coupleNames", "Groom & Bride"],
+    ["side", "Groom"],
+    ["engagementDate", "21 Oct 2026"],
+    ["weddingDate", "25 Nov 2026"],
+    ["otherFunctions", "22, 23 & 24 Nov 2026"],
+    ["expectedGuests", "250-300"],
+    ["theme", "Floral Rose"],
+    ["updatedAt", new Date().toISOString()]
+  ];
+  if (sheet.getLastRow() < 2) {
+    sheet.getRange(2, 1, defaults.length, 2).setValues(defaults);
+    return;
+  }
+  const existing = sheet.getRange(2, 1, sheet.getLastRow() - 1, 1).getValues().flat().map(String);
+  const missing = defaults.filter((row) => existing.indexOf(row[0]) === -1);
+  if (missing.length) {
+    sheet.getRange(sheet.getLastRow() + 1, 1, missing.length, 2).setValues(missing);
+  }
 }
 
 function ensureEventsTab() {
@@ -243,11 +340,6 @@ function ensureEventsTab() {
   if (sheet.getLastRow() < 2) {
     sheet.getRange(2, 1, EVENTS.length, EVENTS_TAB.columns.length).setValues(EVENTS);
   }
-  const lastEventRow = Math.max(sheet.getLastRow() - 1, 1);
-  const eventRange = sheet.getRange(2, 1, lastEventRow, 1);
-  const rule = SpreadsheetApp.newDataValidation().requireValueInRange(eventRange, true).setAllowInvalid(true).build();
-  const expenses = getSheet().getSheetByName(TABS.expenses.name);
-  if (expenses) expenses.getRange(2, 4, 1000, 1).setDataValidation(rule);
   styleTab(sheet, EVENTS_TAB);
 }
 
@@ -258,52 +350,27 @@ function styleTab(sheet, tab) {
   sheet.setFrozenRows(1);
   if (sheet.getFilter()) sheet.getFilter().remove();
   sheet.getRange(1, 1, Math.max(sheet.getLastRow(), 2), columnCount).createFilter();
-  sheet.getBandings().forEach((banding) => banding.remove());
-  if (sheet.getLastRow() > 1) {
-    sheet.getRange(1, 1, sheet.getLastRow(), columnCount).applyRowBanding(SpreadsheetApp.BandingTheme.LIGHT_GREY);
-  }
-  sheet.setColumnWidths(1, columnCount, 130);
-  sheet.getRange(1, 1, Math.max(sheet.getLastRow(), 2), columnCount).setWrapStrategy(SpreadsheetApp.WrapStrategy.WRAP);
-  sheet.getRange(1, 1, Math.max(sheet.getLastRow(), 2), columnCount).setFontFamily("Arial").setVerticalAlignment("middle");
   if (tab.name === "Expenses") {
-    sheet.setColumnWidth(2, 220); sheet.setColumnWidth(7, 180); sheet.setColumnWidth(10, 260);
-    sheet.getRange("E2:F1000").setNumberFormat("₹#,##0");
+    sheet.setColumnWidth(2, 220);
+    sheet.getRange("E2:F").setNumberFormat("₹#,##0");
     sheet.hideColumns(1);
-    sheet.setConditionalFormatRules([
-      SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied("=$E2=0").setBackground("#fff4f7").setRanges([sheet.getRange("A2:K1000")]).build(),
-      SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied("=AND($E2>0,$F2>=$E2)").setBackground("#e5f4ec").setRanges([sheet.getRange("A2:K1000")]).build(),
-      SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied("=AND($E2>0,$F2<$E2)").setBackground("#f8edd9").setRanges([sheet.getRange("A2:K1000")]).build()
-    ]);
   }
   if (tab.name === "Payments") {
-    sheet.setColumnWidth(3, 220); sheet.setColumnWidth(11, 240); sheet.getRange("G2:G1000").setNumberFormat("₹#,##0");
+    sheet.setColumnWidth(3, 220);
+    sheet.getRange("G2:G").setNumberFormat("₹#,##0");
     sheet.hideColumns(1, 2);
   }
   if (tab.name === "Guests") {
-    sheet.setColumnWidth(2, 200); sheet.setColumnWidth(15, 240); sheet.getRange("J2:K1000").setNumberFormat("0");
+    sheet.setColumnWidth(2, 200);
     sheet.hideColumns(1);
-    sheet.setConditionalFormatRules([
-      SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("Confirmed").setBackground("#e5f4ec").setRanges([sheet.getRange("L2:L1000")]).build(),
-      SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("Declined").setBackground("#f8e4e4").setRanges([sheet.getRange("L2:L1000")]).build(),
-      SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("Invite Sent").setBackground("#f8dce5").setRanges([sheet.getRange("L2:L1000")]).build()
-    ]);
-  }
-  if (tab.name === "Settings") sheet.setColumnWidth(2, 280);
-  if (tab.name === "Events") {
-    sheet.setColumnWidth(1, 220); sheet.setColumnWidth(5, 260);
-    sheet.setConditionalFormatRules([
-      SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("Completed").setBackground("#e5f4ec").setRanges([sheet.getRange("A2:E1000")]).build(),
-      SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("Cancelled").setBackground("#f8e4e4").setRanges([sheet.getRange("A2:E1000")]).build()
-    ]);
   }
 }
 
 function updateDashboard() {
-  const sheet = getSheet().getSheetByName(DASHBOARD_TAB) || getSheet().insertSheet(DASHBOARD_TAB);
+  const sheet = getSheetByName(DASHBOARD_TAB, true);
   sheet.clear();
-  sheet.setHiddenGridlines(true);
   sheet.getRange("A1:F1").merge().setValue("🌸 Wedding Expense Manager").setFontSize(18).setFontWeight("bold").setFontColor("#ffffff").setBackground("#b84d6d");
-  sheet.getRange("A2:F2").merge().setValue("Groom Side · Floral theme · Google Sheets is the database").setFontColor("#8a6475");
+  sheet.getRange("A2:F2").merge().setValue("Groom Side · Google Sheets database").setFontColor("#8a6475");
   sheet.getRange("A4:B4").setValues([["Key Metric", "Value"]]).setFontWeight("bold").setFontColor("#ffffff").setBackground("#8e2f4c");
   sheet.getRange("A5:A10").setValues([["Total Booked"], ["Total Paid"], ["Total Remaining"], ["Booked Items"], ["Fully Paid Items"], ["Guest People"]]);
   sheet.getRange("B5:B10").setFormulas([
@@ -311,32 +378,11 @@ function updateDashboard() {
     ['=COUNTIF(Expenses!E2:E,">0")'], ['=SUMPRODUCT((Expenses!E2:E>0)*(Expenses!F2:F>=Expenses!E2:E))'], ["=SUM(Guests!J2:J)+SUM(Guests!K2:K)"]
   ]);
   sheet.getRange("B5:B7").setNumberFormat("₹#,##0");
-  sheet.getRange("A12:D12").setValues([["Event", "Booked", "Paid", "Remaining"]]).setFontWeight("bold").setFontColor("#ffffff").setBackground("#8e2f4c");
-  const eventRows = EVENTS.filter((event) => event[0] !== "Common / All Functions").map((event) => [event[0], "", "", ""]);
-  sheet.getRange(13, 1, eventRows.length, 4).setValues(eventRows);
-  eventRows.forEach((_, index) => {
-    const row = index + 13;
-    sheet.getRange(row, 2, 1, 3).setFormulas([[
-      `=SUMIF(Expenses!D:D,A${row},Expenses!E:E)`,
-      `=SUMIF(Expenses!D:D,A${row},Expenses!F:F)+SUMIF(Payments!D:D,A${row},Payments!G:G)`,
-      `=MAX(0,B${row}-C${row})`
-    ]]);
-  });
-  sheet.getRange(13, 2, eventRows.length, 3).setNumberFormat("₹#,##0");
-  sheet.getRange("A1:F40").setVerticalAlignment("middle");
-  sheet.setColumnWidths(1, 4, 150); sheet.setColumnWidth(1, 220);
-  sheet.setFrozenRows(2);
-  if (sheet.getFilter()) sheet.getFilter().remove();
-  sheet.getRange(12, 1, Math.max(eventRows.length + 1, 2), 4).createFilter();
-  sheet.setConditionalFormatRules([
-    SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied("=$D13=0").setBackground("#fff4f7").setRanges([sheet.getRange(13, 1, Math.max(eventRows.length, 1), 4)]).build(),
-    SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied("=$C13>=$B13").setBackground("#e5f4ec").setRanges([sheet.getRange(13, 1, Math.max(eventRows.length, 1), 4)]).build()
-  ]);
 }
 
 function readLegacy() {
   const result = { expenses: [], payments: [], guests: [], settings: { initialized: true } };
-  const sheet = getSheet().getSheetByName(LEGACY_SHEET_NAME);
+  const sheet = getSheetByName(LEGACY_SHEET_NAME, false);
   if (!sheet || sheet.getLastRow() < 2) return result;
   const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 4).getValues();
   rows.forEach((row) => {

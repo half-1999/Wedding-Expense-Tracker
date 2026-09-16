@@ -1,6 +1,6 @@
 /* Wedding Expense Manager — Google Sheets is the only database. */
 
-const SYNC_API_URL = "https://script.google.com/macros/s/AKfycbzrcnsA9olmS6bMcvQh0mBuoxUYfqps-jBX2BRDw8dCaSozQYjk0bt4Z3E1OOR4aFQhNg/exec";
+const SYNC_API_URL = "https://script.google.com/macros/s/AKfycbw3ZIXJqTsuk0BZqVeO__RtjqD1CBfc8RNwQsjclRdX9lZfWdN3xhYgx1gehGmEH7jkMA/exec";
 const LEGACY_LOCAL_KEYS = [
   "wedding_expenses",
   "wedding_payments",
@@ -76,7 +76,9 @@ const state = {
   pullQueued: false,
   saveQueued: false,
   pendingWrite: false,
-  ready: false
+  ready: false,
+  updatedAt: "",
+  dataFingerprint: ""
 };
 
 const confirmState = { resolve: null };
@@ -155,6 +157,13 @@ function applyRemoteData(data) {
     initialized: true,
     ...(data.settings && typeof data.settings === "object" ? data.settings : {})
   };
+  state.updatedAt = String(data.updatedAt || state.settings.updatedAt || "");
+  state.dataFingerprint = [
+    state.expenses.length,
+    state.payments.length,
+    state.guests.length,
+    state.updatedAt
+  ].join(":");
   state.ready = true;
 }
 
@@ -182,7 +191,7 @@ function jsonpRequest(url, extraParams) {
     script.onerror = () => finish(reject, new Error("Could not reach the wedding sheet."));
     const timeout = window.setTimeout(() => {
       finish(reject, new Error("The wedding sheet timed out."));
-    }, 45000);
+    }, 20000);
 
     const params = new URLSearchParams();
     params.set("prefix", callbackName);
@@ -231,8 +240,8 @@ async function postToSheet(payload) {
 
 async function confirmSheetWrite(url, expected) {
   let last = null;
-  for (let attempt = 0; attempt < 6; attempt += 1) {
-    await wait(900 + attempt * 400);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await wait(400 + attempt * 300);
     last = await jsonpRequest(url);
     if (!last || last.ok === false) continue;
     const expenses = Array.isArray(last.expenses) ? last.expenses.length : -1;
@@ -265,7 +274,9 @@ function wait(ms) {
 }
 
 /** Pull only - never writes to the sheet. */
-async function pullFromSheet() {
+async function pullFromSheet(options) {
+  const opts = options || {};
+  const quiet = Boolean(opts.quiet);
   const url = getSyncUrl();
   if (!url) {
     setSyncStatus("Sheet API not configured", true);
@@ -276,11 +287,20 @@ async function pullFromSheet() {
     return false;
   }
   state.busy = true;
-  setSyncStatus("Syncing…", false);
+  if (!quiet) setSyncStatus("Syncing…", false);
   try {
-    const remote = await jsonpRequest(url);
-    applyRemoteData(remote);
+    const params = {};
+    if (state.updatedAt) params.since = state.updatedAt;
+    const remote = await jsonpRequest(url, params);
 
+    if (remote && remote.unchanged) {
+      state.syncError = "";
+      setSyncStatus(`Live · ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`, false);
+      setLoader(false);
+      return true;
+    }
+
+    applyRemoteData(remote);
     state.syncError = "";
     setSyncStatus(`Live · ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`, false);
     setLoader(false);
@@ -288,7 +308,7 @@ async function pullFromSheet() {
     return true;
   } catch (error) {
     state.syncError = error.message;
-    setSyncStatus("Sheet unavailable", true);
+    if (!quiet) setSyncStatus("Sheet unavailable", true);
     setLoader(false);
     return false;
   } finally {
@@ -299,7 +319,7 @@ async function pullFromSheet() {
       queueSave();
     } else if (state.pullQueued) {
       state.pullQueued = false;
-      pullFromSheet();
+      pullFromSheet({ quiet: true });
     }
   }
 }
@@ -384,7 +404,11 @@ async function mutateDelete(type, id, successMessage) {
   setSyncStatus("Deleting…", false);
   try {
     const remote = await deleteOnSheet(type, id);
-    applyRemoteData(remote);
+    if (type === "expenses") state.expenses = state.expenses.filter((item) => item.id !== id);
+    else if (type === "payments") state.payments = state.payments.filter((item) => item.id !== id);
+    else if (type === "guests") state.guests = state.guests.filter((item) => item.id !== id);
+    state.updatedAt = String(remote.updatedAt || state.updatedAt || "");
+    state.ready = true;
     state.syncError = "";
     setSyncStatus(`Live · ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`, false);
     render();
@@ -394,6 +418,8 @@ async function mutateDelete(type, id, successMessage) {
     state.syncError = error.message;
     setSyncStatus("Delete failed", true);
     showToast(error.message || "Could not delete on Google Sheet");
+    state.busy = false;
+    state.pendingWrite = false;
     await pullFromSheet();
     return false;
   } finally {
@@ -401,7 +427,7 @@ async function mutateDelete(type, id, successMessage) {
     state.busy = false;
     if (state.pullQueued) {
       state.pullQueued = false;
-      pullFromSheet();
+      pullFromSheet({ quiet: true });
     }
   }
 }
@@ -2059,8 +2085,8 @@ function init() {
   window.setInterval(() => {
     if (document.hidden) return;
     if (state.busy || state.pendingWrite) return;
-    pullFromSheet();
-  }, 8000);
+    pullFromSheet({ quiet: true });
+  }, 12000);
 }
 
 init();
