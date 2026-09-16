@@ -301,6 +301,7 @@ async function pullFromSheet(options) {
     }
 
     applyRemoteData(remote);
+    if (reconcileAdvancePayments()) state.saveQueued = true;
     state.syncError = "";
     setSyncStatus(`Live · ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`, false);
     setLoader(false);
@@ -545,12 +546,102 @@ function getLinkedPayments(expenseId) {
   return state.payments.filter((payment) => payment.expenseId === expenseId);
 }
 
-function getSubsequentPaid(expenseId) {
-  return getLinkedPayments(expenseId).reduce((sum, payment) => sum + num(payment.amount), 0);
+function advancePaymentId(expenseId) {
+  return `pay-adv-${expenseId}`;
 }
 
+function findAdvancePayment(expenseId) {
+  const advId = advancePaymentId(expenseId);
+  const byId = state.payments.find((payment) => payment.id === advId);
+  if (byId) return byId;
+  return state.payments.find((payment) => {
+    if (payment.expenseId !== expenseId) return false;
+    const reference = String(payment.reference || "").trim().toUpperCase();
+    const notes = String(payment.notes || "").trim().toLowerCase();
+    return reference === "ADVANCE" || notes === "advance" || notes === "auto advance";
+  }) || null;
+}
+
+/** Keep a single advance Payment row in sync with expense.advancePaid (idempotent). */
+function ensureAdvancePayment(expense) {
+  if (!expense || !expense.id) return false;
+  const advance = num(expense.advancePaid);
+  const advId = advancePaymentId(expense.id);
+  const existing = findAdvancePayment(expense.id);
+
+  if (advance <= 0) {
+    if (!existing) return false;
+    if (existing.id !== advId && String(existing.reference || "").toUpperCase() !== "ADVANCE") return false;
+    state.payments = state.payments.filter((payment) => payment.id !== existing.id);
+    return true;
+  }
+
+  if (existing) {
+    let changed = false;
+    if (num(existing.amount) !== advance) {
+      existing.amount = advance;
+      changed = true;
+    }
+    if (existing.expenseName !== expense.expense) {
+      existing.expenseName = expense.expense;
+      changed = true;
+    }
+    if (existing.functionName !== expense.function) {
+      existing.functionName = expense.function;
+      changed = true;
+    }
+    if (existing.category !== expense.category) {
+      existing.category = expense.category;
+      changed = true;
+    }
+    if (expense.vendor && existing.vendor !== expense.vendor) {
+      existing.vendor = expense.vendor;
+      changed = true;
+    }
+    if (!String(existing.reference || "").trim()) {
+      existing.reference = "ADVANCE";
+      changed = true;
+    }
+    return changed;
+  }
+
+  state.payments.push({
+    id: advId,
+    expenseId: expense.id,
+    expenseName: expense.expense,
+    functionName: expense.function,
+    category: expense.category,
+    date: String(expense.createdAt || todayISO()).slice(0, 10),
+    amount: advance,
+    mode: "Cash",
+    vendor: expense.vendor || "",
+    reference: "ADVANCE",
+    notes: "Advance",
+    createdAt: new Date().toISOString()
+  });
+  return true;
+}
+
+function reconcileAdvancePayments() {
+  let changed = false;
+  state.expenses.forEach((expense) => {
+    if (ensureAdvancePayment(expense)) changed = true;
+  });
+  return changed;
+}
+
+function syncAdvanceFromPayment(payment) {
+  if (!payment) return;
+  const expense = getExpense(payment.expenseId);
+  if (!expense) return;
+  const advance = findAdvancePayment(expense.id);
+  if (!advance || advance.id !== payment.id) return;
+  expense.advancePaid = num(payment.amount);
+}
+
+/** Payments only — single source of truth for paid amounts. */
 function getTotalPaid(expense) {
-  return num(expense.advancePaid) + getSubsequentPaid(expense.id);
+  return getLinkedPayments(expense.id).reduce((sum, payment) => sum + num(payment.amount), 0);
 }
 
 function getBookingRemaining(expense) {
@@ -588,7 +679,6 @@ function calculateTotals() {
   state.expenses.forEach((expense) => {
     const booked = num(expense.bookingValue);
     totals.totalBooked += booked;
-    totals.totalPaid += num(expense.advancePaid);
     totals.totalRemaining += getBookingRemaining(expense);
     if (booked <= 0) totals.unbookedCount += 1;
     else totals.bookedCount += 1;
@@ -768,6 +858,11 @@ function render(parts) {
   if (which.includes("budget")) renderBudget();
   if (which.includes("payments")) renderPayments();
   if (which.includes("guests")) renderGuests();
+  const detail = document.getElementById("budget-detail");
+  if (detail && !detail.hidden && detail.dataset.expenseId) {
+    if (getExpense(detail.dataset.expenseId)) openBudgetDetail(detail.dataset.expenseId);
+    else closeBudgetDetail();
+  }
 }
 
 function renderDashboard() {
@@ -1085,7 +1180,7 @@ function expenseRow(expense) {
     ? `<span class="expense-name">${escapeHtml(expense.vendor)}</span>${contact ? `<span class="sub">${escapeHtml(contact)}</span>` : ""}`
     : dash(contact || "");
   return `
-    <tr data-id="${escapeHtml(expense.id)}">
+    <tr class="is-clickable" data-action="view-expense" data-id="${escapeHtml(expense.id)}">
       <td><span class="expense-name">${escapeHtml(expense.expense)}</span></td>
       <td>${vendorCell}</td>
       <td>${escapeHtml(expense.category)}</td>
@@ -1103,7 +1198,7 @@ function expenseRow(expense) {
 function expenseCard(expense) {
   const status = getStatus(expense);
   return `
-    <article class="item-card" data-id="${escapeHtml(expense.id)}">
+    <article class="item-card is-clickable" data-action="view-expense" data-id="${escapeHtml(expense.id)}">
       <div class="item-card-top">
         <div>
           <span class="expense-name">${escapeHtml(expense.expense)}</span>
@@ -1123,6 +1218,73 @@ function expenseCard(expense) {
       ${actionButtons("expense", expense.id)}
     </article>
   `;
+}
+
+function openBudgetDetail(id) {
+  const expense = getExpense(id);
+  if (!expense) return;
+  const status = getStatus(expense);
+  const paid = getTotalPaid(expense);
+  const remaining = getDisplayRemaining(expense);
+  const payments = getLinkedPayments(expense.id)
+    .slice()
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(b.createdAt).localeCompare(String(a.createdAt)));
+
+  document.getElementById("budget-detail-title").textContent = expense.expense || "Expense";
+  document.getElementById("budget-detail-body").innerHTML = `
+    <section class="detail-section">
+      <h3>Booking</h3>
+      <div class="detail-grid">
+        <div><span>Category</span><strong>${escapeHtml(expense.category || "—")}</strong></div>
+        <div><span>Function</span><strong>${escapeHtml(expense.function || "—")}</strong></div>
+        <div><span>Vendor</span><strong>${escapeHtml(expense.vendor || "—")}</strong></div>
+        <div><span>Contact</span><strong>${escapeHtml(expense.contactPerson || "—")}</strong></div>
+        <div><span>Phone</span><strong>${expense.vendorPhone ? escapeHtml(formatPhone(expense.vendorPhone)) : "—"}</strong></div>
+        <div><span>Status</span><strong>${statusBadge(status)}</strong></div>
+        <div><span>Booking amount</span><strong>${formatCurrency(expense.bookingValue)}</strong></div>
+        <div><span>Advance (field)</span><strong>${formatCurrency(expense.advancePaid)}</strong></div>
+        <div><span>Total paid</span><strong>${formatCurrency(paid)}</strong></div>
+        <div><span>Remaining</span><strong>${formatCurrency(remaining)}</strong></div>
+        <div class="wide"><span>Remarks</span><strong>${escapeHtml(expense.notes || "—")}</strong></div>
+        <div class="wide"><span>Created</span><strong>${escapeHtml(expense.createdAt ? String(expense.createdAt).slice(0, 10) : "—")}</strong></div>
+      </div>
+    </section>
+    <section class="detail-section">
+      <h3>Payment History</h3>
+      <div class="payment-history">
+        ${payments.length ? payments.map((payment) => `
+          <article class="payment-history-item">
+            <div class="row">
+              <strong>${formatCurrency(payment.amount)}</strong>
+              <span>${escapeHtml(payment.date || "—")}</span>
+            </div>
+            <span class="sub">${escapeHtml(payment.mode || "—")}${payment.reference ? ` · ${escapeHtml(payment.reference)}` : ""}</span>
+            ${payment.vendor ? `<span class="sub">${escapeHtml(payment.vendor)}</span>` : ""}
+            ${payment.notes ? `<span class="sub">${escapeHtml(payment.notes)}</span>` : ""}
+          </article>
+        `).join("") : `<p class="hint">No payments recorded for this booking yet.</p>`}
+      </div>
+    </section>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" data-action="edit-expense" data-id="${escapeHtml(expense.id)}">Edit</button>
+      <button type="button" class="btn btn-primary" data-action="add-payment" data-expense-id="${escapeHtml(expense.id)}">Add Payment</button>
+    </div>
+  `;
+
+  const drawer = document.getElementById("budget-detail");
+  drawer.dataset.expenseId = expense.id;
+  drawer.hidden = false;
+  document.body.classList.add("modal-open");
+}
+
+function closeBudgetDetail() {
+  const drawer = document.getElementById("budget-detail");
+  if (!drawer || drawer.hidden) return;
+  drawer.hidden = true;
+  delete drawer.dataset.expenseId;
+  if (document.getElementById("form-modal").hidden && document.getElementById("confirm-modal").hidden) {
+    document.body.classList.remove("modal-open");
+  }
 }
 
 function renderPayments() {
@@ -1492,9 +1654,12 @@ async function saveExpense(event) {
       return;
     }
     Object.assign(current, payload);
+    ensureAdvancePayment(current);
   } else {
     savedId = uid("exp");
-    state.expenses.push({ id: savedId, ...payload, createdAt: new Date().toISOString() });
+    const created = { id: savedId, ...payload, createdAt: new Date().toISOString() };
+    state.expenses.push(created);
+    ensureAdvancePayment(created);
   }
 
   closeModal();
@@ -1507,7 +1672,7 @@ async function saveExpense(event) {
   }
 }
 
-function openPaymentModal(id) {
+function openPaymentModal(id, preferredExpenseId) {
   if (!state.expenses.length) {
     showToast("Add an expense before recording a payment.");
     return;
@@ -1541,10 +1706,11 @@ function openPaymentModal(id) {
   if (payment && sorted.some((expense) => expense.id === payment.expenseId)) {
     select.value = payment.expenseId;
   } else if (!payment) {
-    const firstWithVendor = sorted.find((expense) => expense.vendor);
+    const preferred = preferredExpenseId && sorted.find((expense) => expense.id === preferredExpenseId);
+    const firstWithVendor = preferred || sorted.find((expense) => expense.vendor) || sorted[0];
     if (firstWithVendor) {
       select.value = firstWithVendor.id;
-      document.getElementById("payment-vendor").value = firstWithVendor.vendor;
+      document.getElementById("payment-vendor").value = firstWithVendor.vendor || "";
     }
   }
   clearFormError("payment");
@@ -1601,6 +1767,7 @@ function savePayment(event) {
       return;
     }
     Object.assign(current, payload);
+    syncAdvanceFromPayment(current);
   } else {
     savedId = uid("pay");
     state.payments.push({ id: savedId, ...payload, createdAt: new Date().toISOString() });
@@ -1801,7 +1968,18 @@ async function deletePayment(id) {
     confirmLabel: "Delete"
   });
   if (!ok) return;
-  await mutateDelete("payments", id, "Payment deleted");
+  const expense = getExpense(payment.expenseId);
+  const advanceRow = expense ? findAdvancePayment(expense.id) : null;
+  const wasAdvance = Boolean(advanceRow && advanceRow.id === payment.id);
+  const deleted = await mutateDelete("payments", id, "Payment deleted");
+  if (deleted && wasAdvance) {
+    const current = getExpense(payment.expenseId);
+    if (current) {
+      current.advancePaid = 0;
+      await saveData();
+      render();
+    }
+  }
 }
 
 async function deleteGuest(id) {
@@ -1865,6 +2043,7 @@ async function handleImport(file) {
     state.payments = data.payments.map(sanitizePayment).filter(Boolean);
     state.guests = Array.isArray(data.guests) ? data.guests.map(sanitizeGuest).filter(Boolean) : [];
     state.settings = { initialized: true, ...(data.settings && typeof data.settings === "object" ? data.settings : {}) };
+    reconcileAdvancePayments();
     render();
     const saved = await saveData();
     if (saved) showToast("Data imported to Google Sheet");
@@ -1987,9 +2166,17 @@ function onClick(event) {
   const action = button.dataset.action;
   const id = button.dataset.id;
   if (action === "add-expense") openExpenseModal();
-  if (action === "edit-expense") openExpenseModal(id);
+  if (action === "edit-expense") {
+    closeBudgetDetail();
+    openExpenseModal(id);
+  }
+  if (action === "view-expense") openBudgetDetail(id);
+  if (action === "close-budget-detail") closeBudgetDetail();
   if (action === "delete-expense") deleteExpense(id);
-  if (action === "add-payment") openPaymentModal();
+  if (action === "add-payment") {
+    closeBudgetDetail();
+    openPaymentModal(null, button.dataset.expenseId || "");
+  }
   if (action === "edit-payment") openPaymentModal(id);
   if (action === "delete-payment") deletePayment(id);
   if (action === "add-guest") openGuestModal();
@@ -2027,6 +2214,10 @@ function onKeydown(event) {
   }
   if (!document.getElementById("form-modal").hidden) {
     closeModal();
+    return;
+  }
+  if (!document.getElementById("budget-detail").hidden) {
+    closeBudgetDetail();
     return;
   }
   toggleSettings(false);

@@ -113,7 +113,7 @@
         <div class="panel-head">
           <div>
             <h2>Budget &amp; Bookings 🧾</h2>
-            <p class="hint">Remaining = booking value − (advance + later payments). All rows live in Google Sheets.</p>
+            <p class="hint">Remaining = booking value − payments. Advance creates a Payment row; Payments are the source of truth for paid amounts.</p>
           </div>
           <button type="button" class="btn btn-primary" data-action="add-expense">➕ Add Expense</button>
         </div>
@@ -522,6 +522,20 @@
         <button type="button" class="btn btn-danger" id="confirm-ok">Delete</button>
       </div>
     </div>
+  </div>
+
+  <div class="detail-drawer" id="budget-detail" hidden>
+    <div class="detail-drawer-backdrop" data-action="close-budget-detail"></div>
+    <aside class="detail-drawer-panel" role="dialog" aria-modal="true" aria-labelledby="budget-detail-title">
+      <div class="detail-drawer-head">
+        <div>
+          <p class="eyebrow">Booking detail</p>
+          <h2 id="budget-detail-title">Expense</h2>
+        </div>
+        <button type="button" class="icon-btn" data-action="close-budget-detail" aria-label="Close">×</button>
+      </div>
+      <div id="budget-detail-body" class="detail-drawer-body"></div>
+    </aside>
   </div>
 
   <div class="toasts" id="toasts" aria-live="polite" aria-atomic="true"></div>
