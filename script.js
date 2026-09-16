@@ -197,22 +197,23 @@ function jsonpRequest(url) {
   return new Promise((resolve, reject) => {
     const callbackName = `weddingSheetCallback${Date.now()}${Math.random().toString(36).slice(2, 7)}`;
     const script = document.createElement("script");
-    const cleanup = () => {
+    const cleanup = (keepCallback) => {
       delete window[callbackName];
       script.remove();
+      if (keepCallback) window[callbackName] = () => {};
     };
     window[callbackName] = (payload) => {
-      cleanup();
+      cleanup(false);
       resolve(payload);
     };
     script.onerror = () => {
-      cleanup();
+      cleanup(false);
       reject(new Error("Could not read the wedding sheet."));
     };
     const timeout = window.setTimeout(() => {
-      cleanup();
+      cleanup(true);
       reject(new Error("The wedding sheet timed out."));
-    }, 12000);
+    }, 30000);
     const finish = window[callbackName];
     window[callbackName] = (payload) => {
       window.clearTimeout(timeout);
